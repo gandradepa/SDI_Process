@@ -10,7 +10,7 @@
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet" />
 
     <!-- App CSS -->
-    <link href="{{ url_for('static', filename='style.css', v=23) }}" rel="stylesheet" />
+    <link href="{{ url_for('static', filename='style.css', v=25) }}" rel="stylesheet" />
   </head>
   <body class="ubc-body">
     <!-- Superior dark-blue strip -->
@@ -24,18 +24,6 @@
           <h1 class="ubc-brand m-0 text-center">{{ title }}</h1>
           <div class="d-flex align-items-center gap-3">
             <img src="{{ url_for('static', filename='logos/' + logo_fac_name) }}" alt="UBC Facilities" class="ubc-facilities-logo" />
-            
-            <!-- Botão SDI Package -->
-            <form id="exportForm" action="{{ url_for('export_to_sdi') }}" method="POST" class="m-0">
-              <input type="hidden" name="building_code" value="{{ selected_building }}">
-              <button id="exportButton" type="submit" class="btn ubc-btn shadow-sm">SDI Package</button>
-            </form>
-
-            <!-- Botão Export to Planon -->
-            <form action="{{ url_for('export_to_planon') }}" method="POST" class="m-0">
-                <button type="submit" class="btn ubc-btn shadow-sm">Export to Planon</button>
-            </form>
-
           </div>
         </div>
       </div>
@@ -75,30 +63,86 @@
         </div>
       </div>
 
-      <!-- Data Table -->
-      <div class="card tile">
-        <div class="card-body">
-          <div class="table-responsive">
-            <table id="assetsTable" class="table table-striped table-bordered align-middle w-100">
-              <thead class="table-light">
-                <tr>
-                  {% for c in columns %}
-                    <th class="text-nowrap">{{ c }}</th>
-                  {% endfor %}
-                </tr>
-              </thead>
-              <tbody>
-                {% for r in rows %}
-                  <tr>
-                    {% for c in columns %}
-                      <td class="text-nowrap">{{ r.get(c, "") }}</td>
+      <!-- Abas de Navegação -->
+      <ul class="nav nav-tabs" id="assetTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="unpackaged-tab" data-bs-toggle="tab" data-bs-target="#unpackaged-assets-pane" type="button" role="tab" aria-controls="unpackaged-assets-pane" aria-selected="true">Unpackaged Assets</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="packaged-tab" data-bs-toggle="tab" data-bs-target="#packaged-assets-pane" type="button" role="tab" aria-controls="packaged-assets-pane" aria-selected="false">Packaged Assets</button>
+        </li>
+      </ul>
+
+      <!-- Conteúdo das Abas -->
+      <div class="tab-content" id="assetTabsContent">
+        <!-- Aba de Unpackaged Assets -->
+        <div class="tab-pane fade show active" id="unpackaged-assets-pane" role="tabpanel" aria-labelledby="unpackaged-tab">
+          <div class="card tile mt-3">
+            <div class="card-header bg-white d-flex justify-content-end align-items-center gap-2">
+                <!-- Botão SDI Package -->
+                <form id="exportForm" action="{{ url_for('export_to_sdi') }}" method="POST" class="m-0">
+                  <input type="hidden" name="building_code" value="{{ selected_building }}">
+                  <button id="exportButton" type="submit" class="btn ubc-btn shadow-sm">SDI Package</button>
+                </form>
+
+                <!-- Botão Export to Planon -->
+                <form action="{{ url_for('export_to_planon') }}" method="POST" class="m-0">
+                    <button type="submit" class="btn ubc-btn shadow-sm">Export to Planon</button>
+                </form>
+            </div>
+            <div class="card-body">
+              <div class="table-responsive">
+                <table id="unpackagedAssetsTable" class="table table-striped table-bordered align-middle w-100">
+                  <thead class="table-light">
+                    <tr>
+                      {% for c in columns %}
+                        <th class="text-nowrap">{{ c }}</th>
+                      {% endfor %}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for r in unpackaged_rows %}
+                      <tr>
+                        {% for c in columns %}
+                          <td class="text-nowrap">{{ r.get(c, "") }}</td>
+                        {% endfor %}
+                      </tr>
                     {% endfor %}
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                  </tbody>
+                </table>
+              </div>
+              <p class="mt-3 text-muted">Total rows: {{ unpackaged_rows|length }}</p>
+            </div>
           </div>
-          <p class="mt-3 text-muted">Total rows: {{ rows|length }}</p>
+        </div>
+        
+        <!-- Aba de Packaged Assets -->
+        <div class="tab-pane fade" id="packaged-assets-pane" role="tabpanel" aria-labelledby="packaged-tab">
+           <div class="card tile mt-3">
+            <div class="card-body">
+              <div class="table-responsive">
+                <table id="packagedAssetsTable" class="table table-striped table-bordered align-middle w-100">
+                  <thead class="table-light">
+                    <tr>
+                      {% for c in columns %}
+                        <th class="text-nowrap">{{ c }}</th>
+                      {% endfor %}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for r in packaged_rows %}
+                      <tr>
+                        {% for c in columns %}
+                          <td class="text-nowrap">{{ r.get(c, "") }}</td>
+                        {% endfor %}
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <p class="mt-3 text-muted">Total rows: {{ packaged_rows|length }}</p>
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -120,8 +164,7 @@
     <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
     <script>
       $(function () {
-        // --- Lógica da Tabela de Dados ---
-        const table = $('#assetsTable').DataTable({
+        const commonDataTableOptions = {
           pageLength: 25,
           order: [],
           stateSave: true,
@@ -129,12 +172,18 @@
           scrollX: true,
           autoWidth: false,
           responsive: false
+        };
+
+        // --- Inicializa as duas tabelas ---
+        const unpackagedTable = $('#unpackagedAssetsTable').DataTable(commonDataTableOptions);
+        const packagedTable = $('#packagedAssetsTable').DataTable(commonDataTableOptions);
+        
+        // --- Ajusta colunas ao trocar de aba ---
+        $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function (e) {
+            $.fn.dataTable.tables({ visible: true, api: true }).columns.adjust();
         });
 
-        const adjust = () => table.columns.adjust().draw(false);
-        window.addEventListener('resize', adjust);
-        setTimeout(adjust, 250); 
-
+        // --- Lógica do filtro de building ---
         $('#building-select').on('change', function() {
           $('#buildingFilterForm').submit();
         });
@@ -146,21 +195,15 @@
           const prefix = "CONFIRM:";
           
           if (message.startsWith(prefix)) {
-            // Extrai os códigos QR da mensagem
             const qrCodes = message.substring(prefix.length);
             const formattedQrCodes = qrCodes.split(',').join(', ');
-
-            // Esconde o alerta de texto estático para não confundir o usuário
             confirmationAlert.hide();
 
-            // Exibe o pop-up de confirmação nativo do navegador
             const userConfirmed = confirm(
               `Os seguintes QR Codes já foram exportados:\n\n${formattedQrCodes}\n\nDeseja substituí-los e gerar o pacote SDI novamente?`
             );
 
             if (userConfirmed) {
-              // Se o usuário clicar "OK", adiciona um campo oculto ao formulário
-              // e o reenvia para forçar a substituição.
               const exportForm = $('#exportForm');
               $('<input>').attr({
                   type: 'hidden',
@@ -176,3 +219,4 @@
     </script>
   </body>
 </html>
+

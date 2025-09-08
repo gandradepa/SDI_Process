@@ -131,7 +131,7 @@ def get_all_buildings() -> list:
         flash(f"⚠️ {error_msg}", "danger")
         return []
 
-def build_dashboard_dataset(building_code: str = None) -> pd.DataFrame:
+def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
     try:
         df = build_sdi_dataset(building_code=building_code).copy()
         df["QR Code"] = df["QR Code"].astype(str).str.strip()
@@ -154,12 +154,46 @@ def build_dashboard_dataset(building_code: str = None) -> pd.DataFrame:
                     df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
 
         except Exception as e:
-            print(f"[ERROR] in build_dashboard_dataset (merging building names): {repr(e)}")
+            print(f"[ERROR] in build_unpackaged_dataset (merging building names): {repr(e)}")
 
         return ensure_columns_and_order(df)
     except Exception as e:
-        print(f"[ERROR] in build_dashboard_dataset (main block): {repr(e)}")
+        print(f"[ERROR] in build_unpackaged_dataset (main block): {repr(e)}")
         return pd.DataFrame(columns=MASTER_COLS)
+
+def build_packaged_dataset(building_code: str = None) -> pd.DataFrame:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            if not table_exists(conn, 'sdi_print_out'):
+                return pd.DataFrame(columns=MASTER_COLS)
+            df = pd.read_sql_query('SELECT * FROM sdi_print_out', conn)
+
+        if building_code:
+            df = df[df['Building'].astype(str) == str(building_code)]
+
+        # Adiciona a lógica para fazer o merge com os nomes dos edifícios
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                if table_exists(conn, 'Buildings'):
+                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+                    df_buildings['Code'] = df_buildings['Code'].astype(str)
+                    
+                    # Usa o código do edifício para o merge
+                    df['Building_Code_For_Merge'] = df['Building'].astype(str)
+                    df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
+                    
+                    # Substitui o código pelo nome, mantendo o código se o nome não for encontrado
+                    df['Building'] = df['Name'].fillna(df['Building'])
+                    
+                    df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
+        except Exception as e:
+            print(f"[ERROR] in build_packaged_dataset (merging building names): {repr(e)}")
+        
+        return ensure_columns_and_order(df)
+    except Exception as e:
+        print(f"[ERROR] in build_packaged_dataset: {repr(e)}")
+        return pd.DataFrame(columns=MASTER_COLS)
+
 
 def _check_db_writable(path: str):
     folder = os.path.dirname(path) or "."
@@ -201,13 +235,15 @@ def dashboard():
         selected_building_code = request.args.get("building_code", "")
         
         all_buildings = get_all_buildings()
-        unpacked_df = build_dashboard_dataset(building_code=selected_building_code)
+        unpackaged_df = build_unpackaged_dataset(building_code=selected_building_code)
+        packaged_df = build_packaged_dataset(building_code=selected_building_code)
         
         return render_template(
             "dashboard.html",
-            title="List of Assets Ready to be Loaded to Planon",
+            title="SDI Asset Management",
             columns=MASTER_COLS,
-            rows=unpacked_df.to_dict(orient="records"),
+            unpackaged_rows=unpackaged_df.to_dict(orient="records"),
+            packaged_rows=packaged_df.to_dict(orient="records"),
             logo_main_name=LOGO_MAIN_NAME,
             logo_fac_name=LOGO_FAC_NAME,
             all_buildings=all_buildings,
@@ -216,7 +252,7 @@ def dashboard():
     except Exception as e:
         print(f"[FATAL ERROR] in dashboard route: {repr(e)}")
         flash("A critical error occurred while loading the dashboard. Please check the console log.", "danger")
-        return render_template("dashboard.html", title="Error", columns=MASTER_COLS, rows=[], all_buildings=[])
+        return render_template("dashboard.html", title="Error", columns=MASTER_COLS, unpackaged_rows=[], packaged_rows=[], all_buildings=[])
 
 @app.route("/export", methods=["POST"])
 def export_to_sdi():
@@ -346,4 +382,5 @@ def export_to_planon():
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8_003, debug=True)
+
 
