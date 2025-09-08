@@ -110,16 +110,22 @@ def get_codes_in_print_out_table() -> set:
 def get_all_buildings() -> list:
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            # Query all building codes from both asset tables
+            df1_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
+            df2_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
+            asset_building_codes = set(pd.concat([df1_codes, df2_codes])['Building'].dropna().astype(str))
+
+            # Query all building codes from the sdi_print_out table
+            if table_exists(conn, 'sdi_print_out'):
+                df3_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_print_out', conn)
+                asset_building_codes.update(df3_codes['Building'].dropna().astype(str))
+
+            # If Buildings table does not exist, return codes as names
             if not table_exists(conn, 'Buildings'):
-                df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
-                df2 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
-                all_codes = sorted(pd.concat([df1, df2])['Building'].dropna().unique())
+                all_codes = sorted(list(asset_building_codes))
                 return [{'Code': code, 'Name': f'Building {code}'} for code in all_codes]
 
-            df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
-            df2 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
-            asset_building_codes = set(pd.concat([df1, df2])['Building'].dropna().astype(str))
-
+            # Fetch names from Buildings table and filter based on all found codes
             df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
             df_buildings['Code'] = df_buildings['Code'].astype(str)
             df_filtered = df_buildings[df_buildings['Code'].isin(asset_building_codes)]
@@ -264,11 +270,13 @@ def export_to_sdi():
         return redirect(url_for("dashboard"))
 
     try:
-        df = build_sdi_dataset(building_code=building_code)
+        # Use the unpackaged function to get only new assets for packaging
+        df = build_unpackaged_dataset(building_code=building_code)
         if df.empty:
-            flash(f"No new assets to export for the selected building.", "info")
+            flash(f"No new assets to package for the selected building.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
+        # The confirmation logic remains correct as it checks against sdi_print_out
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
             new_codes = set(df["QR Code"].astype(str).str.strip())
@@ -281,9 +289,19 @@ def export_to_sdi():
         
         now = datetime.now()
         df_print = df.copy()
+        
+        # We need the original building CODE, not the merged name, for the database
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+        
+        df_print = pd.merge(df_print, df_buildings, left_on='Building', right_on='Name', how='left')
+        df_print['Building'] = df_print['Code'].fillna(df_print['Building'])
+        df_print = df_print.drop(columns=['Code', 'Name'])
+        
         for c in PRINT_OUT_COLS:
             if c not in df_print.columns:
                 df_print[c] = ""
+
         df_print["print_out"] = 0
         df_print["date"] = now.strftime("%Y-%m-%d")
         df_print["time"] = now.strftime("%H:%M:%S")
@@ -303,31 +321,50 @@ def export_to_sdi():
             df_print.to_sql("sdi_print_out", conn, if_exists="append", index=False)
         
         if force_replace:
-            flash(f"✅ Replaced and exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+            flash(f"✅ Replaced and exported {len(df_print)} rows to SDI Package successfully.", "success")
         else:
-            flash(f"✅ Exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+            flash(f"✅ Packaged {len(df_print)} new assets successfully.", "success")
 
     except Exception as e:
         print(f"[ERROR] in export_to_sdi: {repr(e)}")
-        flash(f"⚠️ Could not record the export. {str(e)}", "danger")
+        flash(f"⚠️ Could not record the package. {str(e)}", "danger")
     
     return redirect(url_for("dashboard", building_code=building_code))
 
 @app.route("/export-planon", methods=["POST"])
 def export_to_planon():
+    building_code = request.form.get("building_code")
+    force_planon_export = request.form.get("force_planon_export", "false").lower() == "true"
+
     try:
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
-            df = pd.read_sql_query("SELECT * FROM sdi_print_out WHERE print_out = 0", conn)
+            query = 'SELECT * FROM sdi_print_out'
+            params = []
+            if building_code:
+                query += ' WHERE Building = ?'
+                params.append(building_code)
+            
+            all_packaged_df = pd.read_sql_query(query, conn, params=params)
 
-        if df.empty:
-            flash("No new assets to export to Planon.", "info")
-            return redirect(url_for("dashboard"))
+        if all_packaged_df.empty:
+            flash("No packaged assets found to export for the selected building.", "info")
+            return redirect(url_for("dashboard", building_code=building_code))
+
+        already_exported_df = all_packaged_df[all_packaged_df['print_out'].astype(str) == '1']
+
+        if not already_exported_df.empty and not force_planon_export:
+            duplicate_codes = already_exported_df['QR Code'].tolist()
+            message = f"PLANON_CONFIRM:{','.join(duplicate_codes)}"
+            flash(message, "planon_confirmation")
+            return redirect(url_for("dashboard", building_code=building_code))
+
+        df_to_export = all_packaged_df
         
-        building_label = _get_building_label_for_filename(df)
+        building_label = _get_building_label_for_filename(df_to_export)
         date_str = datetime.now().strftime("%m_%d_%Y")
         output_filename = f"SDI_Process_{date_str}_{building_label}.xlsx"
 
-        df2 = df.rename(columns=COLUMN_RENAME_MAP)
+        df2 = df_to_export.rename(columns=COLUMN_RENAME_MAP)
         for name, value in CONST_COLS.items():
             df2[name] = value
 
@@ -362,8 +399,15 @@ def export_to_planon():
         _check_db_writable(DB_PATH)
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
             cur = conn.cursor()
-            cur.execute('UPDATE sdi_print_out SET print_out = 1 WHERE print_out = 0')
+            update_query = 'UPDATE sdi_print_out SET print_out = 1 WHERE print_out = 0'
+            update_params = []
+            if building_code:
+                update_query += ' AND Building = ?'
+                update_params.append(building_code)
+            cur.execute(update_query, update_params)
             conn.commit()
+        
+        flash(f"✅ Successfully exported {len(df_to_export)} assets to Planon file.", "success")
 
         return send_file(
             buffer,
@@ -375,12 +419,11 @@ def export_to_planon():
     except Exception as e:
         print(f"[ERROR] in export_to_planon: {repr(e)}")
         flash(f"⚠️ An unexpected error occurred: {str(e)}", "danger")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("dashboard", building_code=building_code))
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8_003, debug=True)
-
 
