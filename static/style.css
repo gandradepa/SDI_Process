@@ -35,7 +35,7 @@
   white-space:nowrap;
 }
 
-/* --- DEFINITIVE LOGO SIZES --- */
+/* --- LOGO SIZES (AUMENTADO) --- */
 header.ubc-navbar img { max-height:none !important; }
 header.ubc-navbar .ubc-logo{ height:75px !important; width:auto !important; display:block !important; }
 header.ubc-navbar .ubc-facilities-logo{ height:65px !important; width:auto !important; display:block !important; }
@@ -51,18 +51,6 @@ header.ubc-navbar .ubc-facilities-logo{ height:65px !important; width:auto !impo
   .ubc-brand{ font-size:1rem; }
 }
 
-/* Button styling */
-.ubc-btn {
-  background-color: var(--ubc-blue-light);
-  color: #fff;
-  border: 1px solid var(--ubc-blue-light);
-}
-.ubc-btn:hover {
-  background-color: var(--ubc-blue);
-  color: #fff;
-  border: 1px solid var(--ubc-blue);
-}
-
 /* Card styling */
 .tile{
   transition:transform .2s ease, box-shadow .2s ease;
@@ -71,23 +59,43 @@ header.ubc-navbar .ubc-facilities-logo{ height:65px !important; width:auto !impo
 }
 .tile:hover{ transform:translateY(-3px); box-shadow:0 .75rem 1.5rem rgba(0,0,0,.1); }
 
+/* Custom Button */
+.ubc-btn {
+  background-color: var(--ubc-blue);
+  border-color: var(--ubc-blue);
+  color: #fff;
+}
+.ubc-btn:hover {
+  background-color: var(--ubc-blue-light);
+  border-color: var(--ubc-blue-light);
+  color: #fff;
+}
+
+
 /* Footer */
 .ubc-footer{ background-color:var(--ubc-blue); color:#fff; font-size:.90rem; }
 .footer-text{ color:#dcdcdc; }
 
 /* DataTable layout (base) */
 .dataTables_wrapper { width: 100%; }
-.table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.dataTable thead th { white-space: nowrap; }
 
-#assetsTable th, 
-#assetsTable td {
+#assetsTable th,
+#assetsTable td{
   white-space: nowrap;
-  font-size: 0.9rem; /* Smaller font for compactness */
   vertical-align: middle;
+  font-size: .85rem;
 }
 
-/* Make DataTables toolbar also span full width cleanly */
 .dataTables_wrapper .row > div[class^="col-"]{
   flex: 1 0 auto;
+}
+
+/* --- CORREÇÃO DA CAUSA RAIZ PARA O ALINHAMENTO DO CABEÇALHO --- */
+/* Força o cabeçalho da tabela a usar o mesmo algoritmo de layout que o corpo,
+   o que resolve o conflito de cálculo de largura com o scrollX ativo. */
+.dataTables_scrollHead table.dataTable {
+    table-layout: fixed !important;
+    margin: 0 !important;
 }
 

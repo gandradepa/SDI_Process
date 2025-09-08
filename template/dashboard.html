@@ -120,6 +120,7 @@
     <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
     <script>
       $(function () {
+        // --- Lógica da Tabela de Dados ---
         const table = $('#assetsTable').DataTable({
           pageLength: 25,
           order: [],
@@ -137,8 +138,41 @@
         $('#building-select').on('change', function() {
           $('#buildingFilterForm').submit();
         });
+
+        // --- Lógica para o pop-up de confirmação ---
+        const confirmationAlert = $('.alert-confirmation');
+        if (confirmationAlert.length) {
+          const message = confirmationAlert.text().trim();
+          const prefix = "CONFIRM:";
+          
+          if (message.startsWith(prefix)) {
+            // Extrai os códigos QR da mensagem
+            const qrCodes = message.substring(prefix.length);
+            const formattedQrCodes = qrCodes.split(',').join(', ');
+
+            // Esconde o alerta de texto estático para não confundir o usuário
+            confirmationAlert.hide();
+
+            // Exibe o pop-up de confirmação nativo do navegador
+            const userConfirmed = confirm(
+              `Os seguintes QR Codes já foram exportados:\n\n${formattedQrCodes}\n\nDeseja substituí-los e gerar o pacote SDI novamente?`
+            );
+
+            if (userConfirmed) {
+              // Se o usuário clicar "OK", adiciona um campo oculto ao formulário
+              // e o reenvia para forçar a substituição.
+              const exportForm = $('#exportForm');
+              $('<input>').attr({
+                  type: 'hidden',
+                  name: 'force_replace',
+                  value: 'true'
+              }).appendTo(exportForm);
+              
+              exportForm.submit();
+            }
+          }
+        }
       });
     </script>
   </body>
 </html>
-

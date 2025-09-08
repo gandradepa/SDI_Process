@@ -1,21 +1,25 @@
 import os
+import re
 import sqlite3
 from datetime import datetime
-import subprocess
+from io import BytesIO
+from typing import Dict, List
 
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, flash, request
+from flask import Flask, render_template, redirect, url_for, flash, request, send_file
+from openpyxl import load_workbook
 
 # -----------------------------------------------------------------------------
 # Paths
 # -----------------------------------------------------------------------------
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "template")
-STATIC_DIR   = os.path.join(BASE_DIR, "static")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 DB_PATH = r"S:\MaintOpsPlan\AssetMgt\Asset Management Process\Database\8. New Assets\Git_control\SDI Process\QR_codes.db"
+TEMPLATE_PATH = r"S:\MaintOpsPlan\AssetMgt\Asset Management Process\Database\8. New Assets\Git_control\SDI Process\Import Assets-TEMPLATE-082923.xlsx"
 
 LOGO_MAIN_NAME = "ubc_logo.jpg"
-LOGO_FAC_NAME  = "ubc-facilities_logo.jpg"
+LOGO_FAC_NAME = "ubc-facilities_logo.jpg"
 
 # -----------------------------------------------------------------------------
 # Flask
@@ -24,35 +28,44 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, st
 app.secret_key = "replace-with-a-strong-secret"
 
 # -----------------------------------------------------------------------------
-# Columns
+# Columns & Mappings
 # -----------------------------------------------------------------------------
 MASTER_COLS = [
-    "QR Code","Building","Description","Asset Group","UBC Tag","Serial","Model",
-    "Manufacturer","Attribute","Ampere","Supply From","Volts","Location",
-    "Diameter","Technical Safety BC","Year"
+    "QR Code", "Building", "Description", "Asset Group", "UBC Tag", "Serial", "Model",
+    "Manufacturer", "Attribute", "Ampere", "Supply From", "Volts", "Location",
+    "Diameter", "Technical Safety BC", "Year"
 ]
 
-PRINT_OUT_COLS = [
-    "QR Code","Building","Description","Asset Group","UBC Tag","Serial","Model",
-    "Manufacturer","Attribute","Ampere","Supply From","Volts","Location",
-    "Diameter","Technical Safety BC","Year","print_out","date","time"
-]
+PRINT_OUT_COLS = MASTER_COLS + ["print_out", "date", "time"]
+
+COLUMN_RENAME_MAP: Dict[str, str] = {
+    "QR Code": "Code", "Building": "Property", "Description": "Description",
+    "Asset Group": "Asset Group", "UBC Tag": "Asset Tag", "Serial": "Serial Number",
+    "Model": "Model", "Manufacturer": "Make", "Attribute": "Attribute Set",
+    "Ampere": "Amperage Rating", "Supply From": "Fed From Equipment ID",
+    "Volts": "Voltage Rating", "Location": "Space Details", "Diameter": "Diameter",
+    "Technical Safety BC": "Previous (OLD) ID", "Year": "Date Of Manufacture Or Construction",
+}
+
+CONST_COLS: Dict[str, object] = {
+    "Is Missing (Y/N)": False, "Simple": True, "Is Planned Maintenance Required? (Y/N)": False,
+}
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 def table_exists(conn, table_name):
-    """Check if a table exists in the database."""
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
     return cur.fetchone() is not None
 
 def ensure_columns_and_order(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    df = df.loc[:,~df.columns.duplicated()]
     for c in MASTER_COLS:
         if c not in df.columns:
             df[c] = ""
-    return df.loc[:, MASTER_COLS]
+    return df[MASTER_COLS]
 
 def filter_approved(df: pd.DataFrame) -> pd.DataFrame:
     if "Approved" not in df.columns:
@@ -60,57 +73,47 @@ def filter_approved(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[df["Approved"].astype(str) == "1"].copy()
 
 def build_sdi_dataset(building_code: str = None) -> pd.DataFrame:
-    """Mechanical + Electrical (Approved==1), harmonized to MASTER_COLS."""
-    if not os.path.exists(DB_PATH):
-        raise FileNotFoundError(f"Database not found at: {DB_PATH}")
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        me = pd.read_sql_query("SELECT * FROM sdi_dataset;", conn)
-        el = pd.read_sql_query("SELECT * FROM sdi_dataset_EL;", conn)
+    try:
+        if not os.path.exists(DB_PATH):
+            raise FileNotFoundError(f"Database not found at: {DB_PATH}")
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            me = pd.read_sql_query("SELECT * FROM sdi_dataset;", conn)
+            el = pd.read_sql_query("SELECT * FROM sdi_dataset_EL;", conn)
 
-    me = filter_approved(me)
-    el = filter_approved(el)
-    
-    if building_code:
-        me = me[me['Building'].astype(str) == str(building_code)]
-        el = el[el['Building'].astype(str) == str(building_code)]
+        me, el = filter_approved(me), filter_approved(el)
+        
+        if building_code:
+            me = me[me['Building'].astype(str) == str(building_code)]
+            el = el[el['Building'].astype(str) == str(building_code)]
 
-    me = ensure_columns_and_order(me)
+        me = ensure_columns_and_order(me)
+        if "UBC Asset Tag" in el.columns and "UBC Tag" not in el.columns:
+            el = el.rename(columns={"UBC Asset Tag": "UBC Tag"})
+        el = ensure_columns_and_order(el)
 
-    if "UBC Asset Tag" in el.columns and "UBC Tag" not in el.columns:
-        el = el.rename(columns={"UBC Asset Tag": "UBC Tag"})
-    el = ensure_columns_and_order(el)
+        return pd.concat([me, el], ignore_index=True)
+    except Exception as e:
+        print(f"[ERROR] in build_sdi_dataset: {repr(e)}")
+        raise
 
-    return pd.concat([me, el], ignore_index=True)
-
-def get_exported_codes_print_out_eq_1() -> set:
-    """Return 'QR Code' values in sdi_print_out with print_out == 1."""
+def get_codes_in_print_out_table() -> set:
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_exp = pd.read_sql_query('SELECT "QR Code", print_out FROM sdi_print_out', conn)
-    except Exception:
+            if not table_exists(conn, "sdi_print_out"):
+                return set()
+            df_exp = pd.read_sql_query('SELECT DISTINCT "QR Code" FROM sdi_print_out', conn)
+        return set(df_exp["QR Code"].astype(str).str.strip().tolist())
+    except Exception as e:
+        print(f"[ERROR] in get_codes_in_print_out_table: Could not read from sdi_print_out table: {repr(e)}")
         return set()
-
-    if "QR Code" not in df_exp.columns or "print_out" not in df_exp.columns:
-        return set()
-
-    df_exp["QR Code"] = df_exp["QR Code"].astype(str).str.strip()
-    po = df_exp["print_out"].astype(str).str.strip()
-    df_exp = df_exp.loc[po == "1"]
-    return set(df_exp["QR Code"].tolist())
 
 def get_all_buildings() -> list:
-    """
-    Fetches buildings that exist BOTH in the 'Buildings' table and have 
-    corresponding assets in the sdi_dataset tables.
-    """
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             if not table_exists(conn, 'Buildings'):
-                flash("⚠️ 'Buildings' table not found. Using raw building codes for filtering.", "warning")
                 df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
                 df2 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
-                all_codes = pd.concat([df1, df2])['Building'].dropna().unique()
-                all_codes.sort()
+                all_codes = sorted(pd.concat([df1, df2])['Building'].dropna().unique())
                 return [{'Code': code, 'Name': f'Building {code}'} for code in all_codes]
 
             df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
@@ -119,60 +122,44 @@ def get_all_buildings() -> list:
 
             df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
             df_buildings['Code'] = df_buildings['Code'].astype(str)
-
             df_filtered = df_buildings[df_buildings['Code'].isin(asset_building_codes)]
             
-            df_filtered = df_filtered.sort_values('Name')
-            return df_filtered.to_dict(orient="records")
-
+            return df_filtered.sort_values('Name').to_dict(orient="records")
     except Exception as e:
-        error_msg = f"Could not generate building list: {e}"
-        print(f"[Error] {error_msg}")
+        error_msg = f"Could not generate building list: {repr(e)}"
+        print(f"[ERROR] in get_all_buildings: {error_msg}")
         flash(f"⚠️ {error_msg}", "danger")
         return []
 
 def build_dashboard_dataset(building_code: str = None) -> pd.DataFrame:
-    """Builds the main dataset, with an optional filter for building."""
-    df = build_sdi_dataset(building_code=building_code).copy()
-    
-    df["QR Code"] = df["QR Code"].astype(str).str.strip()
-    
-    exported_codes = get_exported_codes_print_out_eq_1()
-    if exported_codes:
-        df = df[~df["QR Code"].isin(exported_codes)].copy()
-
     try:
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            if table_exists(conn, 'Buildings'):
-                df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
-                df_buildings['Code'] = df_buildings['Code'].astype(str)
-                
-                df['Building'] = df['Building'].astype(str)
-                df = pd.merge(df, df_buildings, left_on='Building', right_on='Code', how='left')
-                df.drop(columns=['Building', 'Code'], inplace=True)
-                df.rename(columns={'Name': 'Building'}, inplace=True)
-                df['Building'].fillna('Unknown Building', inplace=True)
+        df = build_sdi_dataset(building_code=building_code).copy()
+        df["QR Code"] = df["QR Code"].astype(str).str.strip()
+        
+        codes_in_print_out = get_codes_in_print_out_table()
+        if codes_in_print_out:
+            df = df[~df["QR Code"].isin(codes_in_print_out)].copy()
+
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                if table_exists(conn, 'Buildings'):
+                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+                    df_buildings['Code'] = df_buildings['Code'].astype(str)
+                    
+                    df['Building_Code_For_Merge'] = df['Building'].astype(str)
+                    df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
+                    
+                    df['Building'] = df['Name'].fillna(df['Building'])
+                    
+                    df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
+
+        except Exception as e:
+            print(f"[ERROR] in build_dashboard_dataset (merging building names): {repr(e)}")
+
+        return ensure_columns_and_order(df)
     except Exception as e:
-        print(f"[Warning] Could not merge building names: {e}")
-
-    return ensure_columns_and_order(df)
-
-
-def build_print_out_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert dashboard DF to sdi_print_out schema + add print_out/date/time."""
-    now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M:%S")
-
-    out = df.copy()
-    for c in PRINT_OUT_COLS:
-        if c not in out.columns:
-            out[c] = ""
-
-    out["print_out"] = 0
-    out["date"] = date_str
-    out["time"] = time_str
-    return out.loc[:, PRINT_OUT_COLS]
+        print(f"[ERROR] in build_dashboard_dataset (main block): {repr(e)}")
+        return pd.DataFrame(columns=MASTER_COLS)
 
 def _check_db_writable(path: str):
     folder = os.path.dirname(path) or "."
@@ -181,50 +168,60 @@ def _check_db_writable(path: str):
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise PermissionError(f"Database file is read-only: {path}")
 
-def export_full_print_out(df_print: pd.DataFrame) -> int:
-    """Replace rows in sdi_print_out with df_print."""
-    _check_db_writable(DB_PATH)
-    with sqlite3.connect(DB_PATH, timeout=20) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sdi_print_out (
-                "QR Code" TEXT, "Building" TEXT, "Description" TEXT, 
-                "Asset Group" TEXT, "UBC Tag" TEXT, "Serial" TEXT, "Model" TEXT, 
-                "Manufacturer" TEXT, "Attribute" TEXT, "Ampere" TEXT, 
-                "Supply From" TEXT, "Volts" TEXT, "Location" TEXT, "Diameter" TEXT, 
-                "Technical Safety BC" TEXT, "Year" TEXT, "print_out" INTEGER, 
-                "date" TEXT, "time" TEXT
-            )
-        """)
-        cur.execute("DELETE FROM sdi_print_out")
-        conn.commit()
-        df_print.to_sql("sdi_print_out", conn, if_exists="append", index=False, method="multi", chunksize=500)
-        conn.commit()
-        return len(df_print)
+def _safe_filename(text: str) -> str:
+    s = "" if text is None else str(text)
+    s = re.sub(r'[\\/:*?"<>|]', "_", s)
+    return s.strip()
+
+def _get_building_label_for_filename(df: pd.DataFrame) -> str:
+    if "Building" not in df.columns or df.empty:
+        return "UnknownBuilding"
+    
+    uniq = [str(v).strip() for v in df["Building"].fillna("").astype(str).unique()]
+    uniq = [u for u in uniq if u]
+
+    if not uniq:
+        return "UnknownBuilding"
+    elif len(uniq) == 1:
+        return _safe_filename(uniq[0])
+    else:
+        return "MULTI_Building"
+
+def _normalize_name(text: str) -> str:
+    s = "" if text is None else str(text)
+    s = re.sub(r"[^0-9a-zA-Z]+", " ", s).strip().lower()
+    return re.sub(r"\s+", " ", s)
 
 # -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
 @app.route("/")
 def dashboard():
-    selected_building_code = request.args.get("building_code", "")
-    all_buildings = get_all_buildings()
-    df = build_dashboard_dataset(building_code=selected_building_code)
-    
-    return render_template(
-        "dashboard.html",
-        title="List of Assets Ready to be Loaded to Planon",
-        columns=MASTER_COLS,
-        rows=df.to_dict(orient="records"),
-        logo_main_name=LOGO_MAIN_NAME,
-        logo_fac_name=LOGO_FAC_NAME,
-        all_buildings=all_buildings,
-        selected_building=selected_building_code
-    )
+    try:
+        selected_building_code = request.args.get("building_code", "")
+        
+        all_buildings = get_all_buildings()
+        unpacked_df = build_dashboard_dataset(building_code=selected_building_code)
+        
+        return render_template(
+            "dashboard.html",
+            title="List of Assets Ready to be Loaded to Planon",
+            columns=MASTER_COLS,
+            rows=unpacked_df.to_dict(orient="records"),
+            logo_main_name=LOGO_MAIN_NAME,
+            logo_fac_name=LOGO_FAC_NAME,
+            all_buildings=all_buildings,
+            selected_building=selected_building_code
+        )
+    except Exception as e:
+        print(f"[FATAL ERROR] in dashboard route: {repr(e)}")
+        flash("A critical error occurred while loading the dashboard. Please check the console log.", "danger")
+        return render_template("dashboard.html", title="Error", columns=MASTER_COLS, rows=[], all_buildings=[])
 
 @app.route("/export", methods=["POST"])
 def export_to_sdi():
     building_code = request.form.get("building_code")
+    force_replace = request.form.get("force_replace", "false").lower() == "true"
 
     if not building_code:
         flash("To create a pack, select only one building at time", "warning")
@@ -232,45 +229,117 @@ def export_to_sdi():
 
     try:
         df = build_sdi_dataset(building_code=building_code)
-
         if df.empty:
-            flash(f"No assets to export for the selected building.", "info")
+            flash(f"No new assets to export for the selected building.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
-        df_print = build_print_out_frame(df)
-        n = export_full_print_out(df_print)
-        flash(f"✅ Exported {n} rows for the selected building to SDI successfully.", "success")
+        if not force_replace:
+            existing_codes = get_codes_in_print_out_table()
+            new_codes = set(df["QR Code"].astype(str).str.strip())
+            duplicate_codes = list(new_codes.intersection(existing_codes))
+
+            if duplicate_codes:
+                message = f"CONFIRM:{','.join(duplicate_codes)}"
+                flash(message, "confirmation")
+                return redirect(url_for("dashboard", building_code=building_code))
+        
+        now = datetime.now()
+        df_print = df.copy()
+        for c in PRINT_OUT_COLS:
+            if c not in df_print.columns:
+                df_print[c] = ""
+        df_print["print_out"] = 0
+        df_print["date"] = now.strftime("%Y-%m-%d")
+        df_print["time"] = now.strftime("%H:%M:%S")
+        df_print = df_print.loc[:, PRINT_OUT_COLS]
+
+        _check_db_writable(DB_PATH)
+        with sqlite3.connect(DB_PATH, timeout=20) as conn:
+            conn.execute(f'''CREATE TABLE IF NOT EXISTS sdi_print_out ({", ".join(f'"{col}" TEXT' for col in PRINT_OUT_COLS)})''')
+            if force_replace:
+                codes_to_replace = df_print["QR Code"].tolist()
+                if codes_to_replace:
+                    placeholders = ','.join('?' for _ in codes_to_replace)
+                    cur = conn.cursor()
+                    cur.execute(f'DELETE FROM sdi_print_out WHERE "QR Code" IN ({placeholders})', codes_to_replace)
+                    conn.commit()
+
+            df_print.to_sql("sdi_print_out", conn, if_exists="append", index=False)
+        
+        if force_replace:
+            flash(f"✅ Replaced and exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+        else:
+            flash(f"✅ Exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+
     except Exception as e:
-        print("[Export Error]", repr(e))
+        print(f"[ERROR] in export_to_sdi: {repr(e)}")
         flash(f"⚠️ Could not record the export. {str(e)}", "danger")
     
     return redirect(url_for("dashboard", building_code=building_code))
 
 @app.route("/export-planon", methods=["POST"])
 def export_to_planon():
-    """Executes the SDI_Spreadsheet.py script."""
     try:
-        script_path = os.path.join(BASE_DIR, "SDI_Spreadsheet.py")
-        if not os.path.exists(script_path):
-            flash(f"⚠️ Script not found at {script_path}", "danger")
+        with sqlite3.connect(DB_PATH, timeout=15) as conn:
+            df = pd.read_sql_query("SELECT * FROM sdi_print_out WHERE print_out = 0", conn)
+
+        if df.empty:
+            flash("No new assets to export to Planon.", "info")
             return redirect(url_for("dashboard"))
-
-        # Executa o script
-        result = subprocess.run(["python", script_path], capture_output=True, text=True, check=True)
         
-        print("Script output:", result.stdout)
-        flash("✅ 'Export to Planon' script executed successfully!", "success")
+        building_label = _get_building_label_for_filename(df)
+        date_str = datetime.now().strftime("%m_%d_%Y")
+        output_filename = f"SDI_Process_{date_str}_{building_label}.xlsx"
 
-    except FileNotFoundError:
-        flash(f"⚠️ Could not find the Python interpreter. Make sure Python is in your system's PATH.", "danger")
-    except subprocess.CalledProcessError as e:
-        print("[Script Execution Error]", e.stderr)
-        flash(f"⚠️ Error executing the script: {e.stderr}", "danger")
+        df2 = df.rename(columns=COLUMN_RENAME_MAP)
+        for name, value in CONST_COLS.items():
+            df2[name] = value
+
+        if not os.path.exists(TEMPLATE_PATH):
+            raise FileNotFoundError(f"Template not found: {TEMPLATE_PATH}")
+        
+        wb = load_workbook(TEMPLATE_PATH)
+        ws = wb.active
+        
+        header_row, start_row = 9, 10
+        norm_df_cols = {_normalize_name(c): c for c in df2.columns}
+        mapping: Dict[int, str] = {}
+        for col_idx in range(1, ws.max_column + 1):
+            header_val = ws.cell(row=header_row, column=col_idx).value
+            norm_header = _normalize_name(header_val)
+            if norm_header in norm_df_cols:
+                mapping[col_idx] = norm_df_cols[norm_header]
+        
+        if not mapping:
+            raise ValueError("No template headers matched the data columns.")
+        
+        df_group = df2.reset_index(drop=True)
+        for r, (_, row) in enumerate(df_group.iterrows(), start=start_row):
+            for col_idx, df_col in mapping.items():
+                val = row.get(df_col)
+                ws.cell(row=r, column=col_idx, value=(None if pd.isna(val) else val))
+        
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        _check_db_writable(DB_PATH)
+        with sqlite3.connect(DB_PATH, timeout=15) as conn:
+            cur = conn.cursor()
+            cur.execute('UPDATE sdi_print_out SET print_out = 1 WHERE print_out = 0')
+            conn.commit()
+
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=output_filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
     except Exception as e:
-        print("[Export Planon Error]", repr(e))
+        print(f"[ERROR] in export_to_planon: {repr(e)}")
         flash(f"⚠️ An unexpected error occurred: {str(e)}", "danger")
-        
-    return redirect(url_for("dashboard"))
+        return redirect(url_for("dashboard"))
 
 # -----------------------------------------------------------------------------
 # Main
