@@ -1,6 +1,6 @@
 # File: SDI_Spreadsheet.py
 # Purpose: Load from SQLite -> df (keep only required cols) -> df2 (renamed + constants)
-#          -> Fill Excel template. By default exports ONE workbook with ALL rows.
+#          -> Fill Excel template -> Mark rows as exported in DB.
 
 import os
 import re
@@ -192,16 +192,41 @@ def export_df2_to_template(df2: pd.DataFrame, group_by_property: bool = GROUP_BY
     return paths
 
 # --------------------------------------------------------------------------------------
+# Database Update
+# --------------------------------------------------------------------------------------
+def mark_all_rows_as_printed(db_path: str = DB_PATH):
+    """Updates the 'print_out' column to 1 for all rows in sdi_print_out."""
+    try:
+        with sqlite3.connect(db_path, timeout=15) as conn:
+            cur = conn.cursor()
+            cur.execute('UPDATE sdi_print_out SET print_out = 1')
+            updated_count = cur.rowcount
+            conn.commit()
+            print(f"[DB Update] Marked {updated_count} rows as printed.")
+    except Exception as e:
+        print(f"[DB Update ERROR] Could not update rows: {e}")
+        raise
+
+# --------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
         df = load_sdi_print_out()
-        df2 = rename_for_df2(df)
-        print(f"[OK] rows -> df={len(df)}, df2={len(df2)}")  # should be equal
-        saved = export_df2_to_template(df2, group_by_property=GROUP_BY_PROPERTY)
-        print("Saved files:")
-        for p in saved:
-            print(" -", p)
+        
+        if df.empty:
+            print("[OK] No new assets to process.")
+        else:
+            df2 = rename_for_df2(df)
+            print(f"[OK] rows -> df={len(df)}, df2={len(df2)}")  # should be equal
+            
+            saved = export_df2_to_template(df2, group_by_property=GROUP_BY_PROPERTY)
+            print("Saved files:")
+            for p in saved:
+                print(" -", p)
+            
+            # After successful export, update the database
+            mark_all_rows_as_printed()
+
     except Exception as e:
         print(f"[ERROR] {e}")

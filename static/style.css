@@ -6,22 +6,22 @@
   --divider:#e6edf5;
 }
 
-/* Page */
+/* Page basics */
 .ubc-body{
   background:var(--light-grey);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color:var(--dark-grey);
 }
 
-/* Dark-blue strips */
+/* UBC dark-blue strips */
 .ubc-top-strip{ background-color:var(--ubc-blue); height:36px; width:100%; }
 .ubc-bottom-strip{ background-color:var(--ubc-blue); height:28px; width:100%; }
 
-/* Header (white band) */
+/* Brand bar */
 .ubc-navbar{
   background:#fff;
   border-bottom:1px solid #e0e0e0;
-  padding:14px 0;                 /* ensures logos sit inside white band */
+  padding:14px 0;
 }
 .ubc-brandbar{
   gap:1.25rem;
@@ -35,34 +35,35 @@
   white-space:nowrap;
 }
 
-/* Logo sizing (balanced; fully inside the white band) */
-header.ubc-navbar img{ max-height:none !important; }
-header.ubc-navbar .ubc-logo{ height:58px !important; width:auto !important; display:block !important; }
-header.ubc-navbar .ubc-facilities-logo{ height:50px !important; width:auto !important; display:block !important; }
+/* --- DEFINITIVE LOGO SIZES --- */
+header.ubc-navbar img { max-height:none !important; }
+header.ubc-navbar .ubc-logo{ height:75px !important; width:auto !important; display:block !important; }
+header.ubc-navbar .ubc-facilities-logo{ height:65px !important; width:auto !important; display:block !important; }
 
 @media (max-width: 992px){
-  header.ubc-navbar .ubc-logo{ height:46px !important; }
-  header.ubc-navbar .ubc-facilities-logo{ height:40px !important; }
+  header.ubc-navbar .ubc-logo{ height:60px !important; }
+  header.ubc-navbar .ubc-facilities-logo{ height:52px !important; }
   .ubc-brand{ font-size:1.05rem; }
 }
 @media (max-width: 576px){
-  header.ubc-navbar .ubc-logo{ height:42px !important; }
-  header.ubc-navbar .ubc-facilities-logo{ height:36px !important; }
+  header.ubc-navbar .ubc-logo{ height:55px !important; }
+  header.ubc-navbar .ubc-facilities-logo{ height:47px !important; }
   .ubc-brand{ font-size:1rem; }
 }
 
-/* Buttons */
-.ubc-btn{
-  background-color:var(--ubc-blue);
-  border:none;
-  color:white;
-  font-weight:600;
-  border-radius:10px;
-  padding:.5rem 1rem;
+/* Button styling */
+.ubc-btn {
+  background-color: var(--ubc-blue-light);
+  color: #fff;
+  border: 1px solid var(--ubc-blue-light);
 }
-.ubc-btn:hover{ background-color:var(--ubc-blue-light); color:white; }
+.ubc-btn:hover {
+  background-color: var(--ubc-blue);
+  color: #fff;
+  border: 1px solid var(--ubc-blue);
+}
 
-/* Cards */
+/* Card styling */
 .tile{
   transition:transform .2s ease, box-shadow .2s ease;
   border-radius:12px;
@@ -74,9 +75,19 @@ header.ubc-navbar .ubc-facilities-logo{ height:50px !important; width:auto !impo
 .ubc-footer{ background-color:var(--ubc-blue); color:#fff; font-size:.90rem; }
 .footer-text{ color:#dcdcdc; }
 
-/* DataTables layout */
-.dataTables_wrapper{ width:100%; }
-.table-responsive{ overflow-x:auto; }
-table.dataTable thead th{ white-space:nowrap; }
-table.dataTable.table-sm>thead>tr>th,
-table.dataTable.table-sm>tbody>tr>td{ padding-top:.35rem; padding-bottom:.35rem; }
+/* DataTable layout (base) */
+.dataTables_wrapper { width: 100%; }
+.table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+#assetsTable th, 
+#assetsTable td {
+  white-space: nowrap;
+  font-size: 0.9rem; /* Smaller font for compactness */
+  vertical-align: middle;
+}
+
+/* Make DataTables toolbar also span full width cleanly */
+.dataTables_wrapper .row > div[class^="col-"]{
+  flex: 1 0 auto;
+}
+
