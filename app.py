@@ -110,22 +110,16 @@ def get_codes_in_print_out_table() -> set:
 def get_all_buildings() -> list:
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            # Query all building codes from both asset tables
-            df1_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
-            df2_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
-            asset_building_codes = set(pd.concat([df1_codes, df2_codes])['Building'].dropna().astype(str))
-
-            # Query all building codes from the sdi_print_out table
-            if table_exists(conn, 'sdi_print_out'):
-                df3_codes = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_print_out', conn)
-                asset_building_codes.update(df3_codes['Building'].dropna().astype(str))
-
-            # If Buildings table does not exist, return codes as names
             if not table_exists(conn, 'Buildings'):
-                all_codes = sorted(list(asset_building_codes))
+                df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
+                df2 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
+                all_codes = sorted(pd.concat([df1, df2])['Building'].dropna().unique())
                 return [{'Code': code, 'Name': f'Building {code}'} for code in all_codes]
 
-            # Fetch names from Buildings table and filter based on all found codes
+            df1 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset', conn)
+            df2 = pd.read_sql_query('SELECT DISTINCT Building FROM sdi_dataset_EL', conn)
+            asset_building_codes = set(pd.concat([df1, df2])['Building'].dropna().astype(str))
+
             df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
             df_buildings['Code'] = df_buildings['Code'].astype(str)
             df_filtered = df_buildings[df_buildings['Code'].isin(asset_building_codes)]
@@ -177,18 +171,15 @@ def build_packaged_dataset(building_code: str = None) -> pd.DataFrame:
         if building_code:
             df = df[df['Building'].astype(str) == str(building_code)]
 
-        # Adiciona a lógica para fazer o merge com os nomes dos edifícios
         try:
             with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 if table_exists(conn, 'Buildings'):
                     df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
                     df_buildings['Code'] = df_buildings['Code'].astype(str)
                     
-                    # Usa o código do edifício para o merge
                     df['Building_Code_For_Merge'] = df['Building'].astype(str)
                     df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
                     
-                    # Substitui o código pelo nome, mantendo o código se o nome não for encontrado
                     df['Building'] = df['Name'].fillna(df['Building'])
                     
                     df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
@@ -246,7 +237,7 @@ def dashboard():
         
         return render_template(
             "dashboard.html",
-            title="SDI Asset Management",
+            title="SDI - Planon Process Management",
             columns=MASTER_COLS,
             unpackaged_rows=unpackaged_df.to_dict(orient="records"),
             packaged_rows=packaged_df.to_dict(orient="records"),
@@ -270,13 +261,11 @@ def export_to_sdi():
         return redirect(url_for("dashboard"))
 
     try:
-        # Use the unpackaged function to get only new assets for packaging
-        df = build_unpackaged_dataset(building_code=building_code)
+        df = build_sdi_dataset(building_code=building_code)
         if df.empty:
-            flash(f"No new assets to package for the selected building.", "info")
+            flash(f"No new assets to export for the selected building.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
-        # The confirmation logic remains correct as it checks against sdi_print_out
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
             new_codes = set(df["QR Code"].astype(str).str.strip())
@@ -289,19 +278,9 @@ def export_to_sdi():
         
         now = datetime.now()
         df_print = df.copy()
-        
-        # We need the original building CODE, not the merged name, for the database
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
-        
-        df_print = pd.merge(df_print, df_buildings, left_on='Building', right_on='Name', how='left')
-        df_print['Building'] = df_print['Code'].fillna(df_print['Building'])
-        df_print = df_print.drop(columns=['Code', 'Name'])
-        
         for c in PRINT_OUT_COLS:
             if c not in df_print.columns:
                 df_print[c] = ""
-
         df_print["print_out"] = 0
         df_print["date"] = now.strftime("%Y-%m-%d")
         df_print["time"] = now.strftime("%H:%M:%S")
@@ -321,44 +300,65 @@ def export_to_sdi():
             df_print.to_sql("sdi_print_out", conn, if_exists="append", index=False)
         
         if force_replace:
-            flash(f"✅ Replaced and exported {len(df_print)} rows to SDI Package successfully.", "success")
+            flash(f"✅ Replaced and exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
         else:
-            flash(f"✅ Packaged {len(df_print)} new assets successfully.", "success")
+            flash(f"✅ Exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
 
     except Exception as e:
         print(f"[ERROR] in export_to_sdi: {repr(e)}")
-        flash(f"⚠️ Could not record the package. {str(e)}", "danger")
+        flash(f"⚠️ Could not record the export. {str(e)}", "danger")
     
     return redirect(url_for("dashboard", building_code=building_code))
 
 @app.route("/export-planon", methods=["POST"])
 def export_to_planon():
     building_code = request.form.get("building_code")
-    force_planon_export = request.form.get("force_planon_export", "false").lower() == "true"
-
+    force_export = request.form.get("force_planon_export", "false").lower() == "true"
+    
     try:
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
-            query = 'SELECT * FROM sdi_print_out'
+            query = "SELECT * FROM sdi_print_out"
             params = []
             if building_code:
-                query += ' WHERE Building = ?'
+                query += " WHERE Building = ?"
                 params.append(building_code)
-            
-            all_packaged_df = pd.read_sql_query(query, conn, params=params)
+            df = pd.read_sql_query(query, conn, params=params)
 
-        if all_packaged_df.empty:
-            flash("No packaged assets found to export for the selected building.", "info")
+            # Carrega a tabela de mapeamento de Asset Group
+            df_asset_group = pd.DataFrame()
+            if table_exists(conn, 'Asset_Group'):
+                df_asset_group = pd.read_sql_query('SELECT Name, "Full Classification" FROM Asset_Group', conn)
+
+        if df.empty:
+            flash("No packaged assets to export to Planon.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
+        
+        if not force_export:
+            already_exported = df[df["print_out"].astype(str) == "1"]
+            if not already_exported.empty:
+                codes = already_exported["QR Code"].tolist()
+                message = f"PLANON_CONFIRM:{','.join(codes)}"
+                flash(message, "planon_confirmation")
+                return redirect(url_for("dashboard", building_code=building_code))
 
-        already_exported_df = all_packaged_df[all_packaged_df['print_out'].astype(str) == '1']
+        df_to_export = df[df["print_out"].astype(str) == "0"] if not force_export else df
+        if df_to_export.empty and not force_export:
+             flash("All packaged assets have already been exported to Planon.", "info")
+             return redirect(url_for("dashboard", building_code=building_code))
 
-        if not already_exported_df.empty and not force_planon_export:
-            duplicate_codes = already_exported_df['QR Code'].tolist()
-            message = f"PLANON_CONFIRM:{','.join(duplicate_codes)}"
-            flash(message, "planon_confirmation")
-            return redirect(url_for("dashboard", building_code=building_code))
-
-        df_to_export = all_packaged_df
+        # --- LÓGICA DE MERGE DO ASSET GROUP ---
+        if not df_asset_group.empty:
+            df_to_export['Asset Group'] = df_to_export['Asset Group'].str.strip()
+            df_asset_group['Name'] = df_asset_group['Name'].str.strip()
+            df_merged = pd.merge(
+                df_to_export, 
+                df_asset_group, 
+                left_on='Asset Group', 
+                right_on='Name', 
+                how='left'
+            )
+            df_merged['Asset Group'] = df_merged['Full Classification'].fillna(df_merged['Asset Group'])
+            df_to_export = df_merged.drop(columns=['Name', 'Full Classification'])
         
         building_label = _get_building_label_for_filename(df_to_export)
         date_str = datetime.now().strftime("%m_%d_%Y")
@@ -368,6 +368,39 @@ def export_to_planon():
         for name, value in CONST_COLS.items():
             df2[name] = value
 
+        # --- LÓGICA PARA VOLTAGE RATING (UoM) ---
+        if 'Voltage Rating' in df2.columns:
+            df2['Voltage Rating (UoM)'] = ''
+            condition = pd.notna(df2['Voltage Rating']) & (df2['Voltage Rating'].astype(str).str.strip() != '')
+            df2.loc[condition, 'Voltage Rating (UoM)'] = 'V'
+
+        # --- LÓGICA PARA DATE OF MANUFACTURE ---
+        def format_year_to_date(year_str):
+            if not year_str or pd.isna(year_str):
+                return year_str
+            s = str(year_str).strip()
+            if s.endswith('.0'):
+                s = s[:-2]
+            
+            if s.isdigit():
+                year_val = int(s)
+                full_year = None
+                if len(s) == 4 and 1900 < year_val < 2100:
+                    full_year = year_val
+                elif len(s) == 2:
+                    current_year_short = datetime.now().year % 100
+                    if year_val > current_year_short:
+                        full_year = 1900 + year_val
+                    else:
+                        full_year = 2000 + year_val
+                
+                if full_year:
+                    return f"01/01/{full_year}"
+            return year_str
+
+        if 'Date Of Manufacture Or Construction' in df2.columns:
+            df2['Date Of Manufacture Or Construction'] = df2['Date Of Manufacture Or Construction'].apply(format_year_to_date)
+        
         if not os.path.exists(TEMPLATE_PATH):
             raise FileNotFoundError(f"Template not found: {TEMPLATE_PATH}")
         
@@ -399,15 +432,11 @@ def export_to_planon():
         _check_db_writable(DB_PATH)
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
             cur = conn.cursor()
-            update_query = 'UPDATE sdi_print_out SET print_out = 1 WHERE print_out = 0'
-            update_params = []
-            if building_code:
-                update_query += ' AND Building = ?'
-                update_params.append(building_code)
-            cur.execute(update_query, update_params)
-            conn.commit()
-        
-        flash(f"✅ Successfully exported {len(df_to_export)} assets to Planon file.", "success")
+            codes_to_update = df_to_export["QR Code"].tolist()
+            if codes_to_update:
+                placeholders = ','.join('?' for _ in codes_to_update)
+                cur.execute(f'UPDATE sdi_print_out SET print_out = 1 WHERE "QR Code" IN ({placeholders})', codes_to_update)
+                conn.commit()
 
         return send_file(
             buffer,
