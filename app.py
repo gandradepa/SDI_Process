@@ -266,6 +266,15 @@ def export_to_sdi():
             flash(f"No new assets to export for the selected building.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
+        # --- VALIDATION FOR REQUIRED FIELDS ---
+        required_cols = ["Description", "Asset Group", "Attribute"]
+        for col in required_cols:
+            # Check for NaN, None, empty strings, and whitespace-only strings
+            if df[col].isnull().any() or df[col].astype(str).str.strip().eq('').any():
+                flash('To create a package, the fields "Description", "Asset Group" and "Attribute" must be filled in', "danger")
+                return redirect(url_for("dashboard", building_code=building_code))
+        # --- END OF VALIDATION ---
+
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
             new_codes = set(df["QR Code"].astype(str).str.strip())
