@@ -357,17 +357,46 @@ def export_to_planon():
 
         # --- LÓGICA DE MERGE DO ASSET GROUP ---
         if not df_asset_group.empty:
-            df_to_export['Asset Group'] = df_to_export['Asset Group'].str.strip()
-            df_asset_group['Name'] = df_asset_group['Name'].str.strip()
-            df_merged = pd.merge(
-                df_to_export, 
-                df_asset_group, 
-                left_on='Asset Group', 
-                right_on='Name', 
-                how='left'
-            )
-            df_merged['Asset Group'] = df_merged['Full Classification'].fillna(df_merged['Asset Group'])
-            df_to_export = df_merged.drop(columns=['Name', 'Full Classification'])
+            
+            # --- NOVA REGRA ESPECIAL PARA "Panels" ---
+            # Corrigido: Adicionado .str antes de .lower()
+            panels_mask = df_to_export['Asset Group'].str.strip().str.lower() == 'panels'
+            df_to_export.loc[panels_mask, 'Asset Group'] = 'EL.21.306.4067'
+
+            # --- VALIDAÇÃO DE DUPLICADOS NO ASSET GROUP (para os restantes) ---
+            other_assets_mask = ~panels_mask
+            asset_groups_to_check = df_to_export.loc[other_assets_mask, 'Asset Group'].str.strip().unique()
+
+            if len(asset_groups_to_check) > 0:
+                relevant_mappings = df_asset_group[df_asset_group['Name'].str.strip().isin(asset_groups_to_check)]
+                duplicated_names = relevant_mappings[relevant_mappings['Name'].duplicated()]['Name'].unique()
+
+                if duplicated_names.any():
+                    conflicting_assets = df_to_export[df_to_export['Asset Group'].isin(duplicated_names)]
+                    conflicting_qr_codes = conflicting_assets['QR Code'].tolist()
+                    qr_codes_str = ", ".join(conflicting_qr_codes)
+                    
+                    error_message = f"The Asset Group is duplicated for QR Codes: {qr_codes_str}. This field must have a unique value."
+                    flash(error_message, "danger")
+                    return redirect(url_for("dashboard", building_code=building_code))
+
+                # --- MERGE PARA OS RESTANTES ASSETS ---
+                other_assets_to_merge = df_to_export[other_assets_mask].copy()
+                other_assets_to_merge['Asset Group'] = other_assets_to_merge['Asset Group'].str.strip()
+                df_asset_group['Name'] = df_asset_group['Name'].str.strip()
+
+                merged_others = pd.merge(
+                    other_assets_to_merge, 
+                    df_asset_group, 
+                    left_on='Asset Group', 
+                    right_on='Name', 
+                    how='left'
+                )
+                merged_others['Asset Group'] = merged_others['Full Classification'].fillna(merged_others['Asset Group'])
+                
+                # Atualiza o DataFrame original com os valores alterados
+                df_to_export.loc[other_assets_mask, 'Asset Group'] = merged_others['Asset Group']
+
         
         building_label = _get_building_label_for_filename(df_to_export)
         date_str = datetime.now().strftime("%m_%d_%Y")
@@ -382,6 +411,12 @@ def export_to_planon():
             df2['Voltage Rating (UoM)'] = ''
             condition = pd.notna(df2['Voltage Rating']) & (df2['Voltage Rating'].astype(str).str.strip() != '')
             df2.loc[condition, 'Voltage Rating (UoM)'] = 'V'
+
+        # --- LÓGICA PARA AMPERAGE RATING (UoM) ---
+        if 'Amperage Rating' in df2.columns:
+            df2['Amperage Rating (UoM)'] = ''
+            condition = pd.notna(df2['Amperage Rating']) & (df2['Amperage Rating'].astype(str).str.strip() != '')
+            df2.loc[condition, 'Amperage Rating (UoM)'] = 'A'
 
         # --- LÓGICA PARA DATE OF MANUFACTURE ---
         def format_year_to_date(year_str):
@@ -464,4 +499,5 @@ def export_to_planon():
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8_003, debug=True)
+
 
