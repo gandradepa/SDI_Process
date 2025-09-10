@@ -15,8 +15,8 @@ from openpyxl import load_workbook
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "template")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-DB_PATH = r"S:\MaintOpsPlan\AssetMgt\Asset Management Process\Database\8. New Assets\Git_control\SDI Process\QR_codes.db"
-TEMPLATE_PATH = r"S:\MaintOpsPlan\AssetMgt\Asset Management Process\Database\8. New Assets\Git_control\SDI Process\Import Assets-TEMPLATE-082923.xlsx"
+DB_PATH = r"/home/developer/asset_capture_app_dev/data/QR_codes.db"
+TEMPLATE_PATH = r"/home/developer/SDI_process/template/Import Assets-TEMPLATE-082923.xlsx"
 
 LOGO_MAIN_NAME = "ubc_logo.jpg"
 LOGO_FAC_NAME = "ubc-facilities_logo.jpg"
