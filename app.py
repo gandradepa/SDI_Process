@@ -32,7 +32,7 @@ app.secret_key = "replace-with-a-strong-secret"
 # -----------------------------------------------------------------------------
 MASTER_COLS = [
     "QR Code", "Building", "Description", "Asset Group", "UBC Tag", "Serial", "Model",
-    "Manufacturer", "Attribute", "Ampere", "Supply From", "Volts", "Location",
+    "Manufacturer", "Attribute", "Ampere", "Supply From", "Volts", "Location", "Space",
     "Diameter", "Technical Safety BC", "Year"
 ]
 
@@ -43,8 +43,9 @@ COLUMN_RENAME_MAP: Dict[str, str] = {
     "Asset Group": "Asset Group", "UBC Tag": "Asset Tag", "Serial": "Serial Number",
     "Model": "Model", "Manufacturer": "Make", "Attribute": "Attribute Set",
     "Ampere": "Amperage Rating", "Supply From": "Fed From Equipment ID",
-    "Volts": "Voltage Rating", "Location": "Space Details", "Diameter": "Diameter",
-    "Technical Safety BC": "Previous (OLD) ID", "Year": "Date Of Manufacture Or Construction",
+    "Volts": "Voltage Rating", "Location": "Space Details", "Space": "Space.Space number", 
+    "Diameter": "Diameter", "Technical Safety BC": "Previous (OLD) ID", 
+    "Year": "Date Of Manufacture Or Construction",
 }
 
 CONST_COLS: Dict[str, object] = {
@@ -86,10 +87,8 @@ def build_sdi_dataset(building_code: str = None) -> pd.DataFrame:
             me = me[me['Building'].astype(str) == str(building_code)]
             el = el[el['Building'].astype(str) == str(building_code)]
 
-        me = ensure_columns_and_order(me)
         if "UBC Asset Tag" in el.columns and "UBC Tag" not in el.columns:
             el = el.rename(columns={"UBC Asset Tag": "UBC Tag"})
-        el = ensure_columns_and_order(el)
 
         return pd.concat([me, el], ignore_index=True)
     except Exception as e:
@@ -134,6 +133,9 @@ def get_all_buildings() -> list:
 def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
     try:
         df = build_sdi_dataset(building_code=building_code).copy()
+        if df.empty:
+            return pd.DataFrame(columns=MASTER_COLS)
+            
         df["QR Code"] = df["QR Code"].astype(str).str.strip()
         
         codes_in_print_out = get_codes_in_print_out_table()
@@ -142,19 +144,33 @@ def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
 
         try:
             with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                qr_codes_df = pd.read_sql_query('SELECT "QR_code_ID", "Location" FROM QR_codes', conn)
+                
+                df_buildings = pd.DataFrame()
                 if table_exists(conn, 'Buildings'):
                     df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
-                    df_buildings['Code'] = df_buildings['Code'].astype(str)
-                    
-                    df['Building_Code_For_Merge'] = df['Building'].astype(str)
-                    df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
-                    
-                    df['Building'] = df['Name'].fillna(df['Building'])
-                    
-                    df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
+
+            qr_codes_df = qr_codes_df.rename(columns={"Location": "Space"})
+            
+            df['merge_key'] = pd.to_numeric(df['QR Code'], errors='coerce')
+            qr_codes_df['merge_key'] = pd.to_numeric(qr_codes_df['QR_code_ID'], errors='coerce')
+            
+            df = pd.merge(df, qr_codes_df[['merge_key', 'Space']], on='merge_key', how='left')
+
+            # Process "Space" column to keep only the value before the first space
+            df['Space'] = df['Space'].fillna('').astype(str).apply(lambda x: x.split(' ')[0])
+            
+            df = df.drop(columns=['merge_key'])
+
+            if not df_buildings.empty:
+                df_buildings['Code'] = df_buildings['Code'].astype(str)
+                df['Building_Code_For_Merge'] = df['Building'].astype(str)
+                df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
+                df['Building'] = df['Name'].fillna(df['Building'])
+                df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
 
         except Exception as e:
-            print(f"[ERROR] in build_unpackaged_dataset (merging building names): {repr(e)}")
+            print(f"[ERROR] in build_unpackaged_dataset (merging data): {repr(e)}")
 
         return ensure_columns_and_order(df)
     except Exception as e:
@@ -168,23 +184,36 @@ def build_packaged_dataset(building_code: str = None) -> pd.DataFrame:
                 return pd.DataFrame(columns=MASTER_COLS)
             df = pd.read_sql_query('SELECT * FROM sdi_print_out', conn)
 
+            qr_codes_df = pd.read_sql_query('SELECT "QR_code_ID", "Location" FROM QR_codes', conn)
+            
+            df_buildings = pd.DataFrame()
+            if table_exists(conn, 'Buildings'):
+                df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+
         if building_code:
             df = df[df['Building'].astype(str) == str(building_code)]
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                if table_exists(conn, 'Buildings'):
-                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
-                    df_buildings['Code'] = df_buildings['Code'].astype(str)
-                    
-                    df['Building_Code_For_Merge'] = df['Building'].astype(str)
-                    df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
-                    
-                    df['Building'] = df['Name'].fillna(df['Building'])
-                    
-                    df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
+            qr_codes_df = qr_codes_df.rename(columns={"Location": "Space"})
+
+            df['merge_key'] = pd.to_numeric(df['QR Code'], errors='coerce')
+            qr_codes_df['merge_key'] = pd.to_numeric(qr_codes_df['QR_code_ID'], errors='coerce')
+
+            df = pd.merge(df, qr_codes_df[['merge_key', 'Space']], on='merge_key', how='left')
+
+            # Process "Space" column to keep only the value before the first space
+            df['Space'] = df['Space'].fillna('').astype(str).apply(lambda x: x.split(' ')[0])
+
+            df = df.drop(columns=['merge_key'])
+
+            if not df_buildings.empty:
+                df_buildings['Code'] = df_buildings['Code'].astype(str)
+                df['Building_Code_For_Merge'] = df['Building'].astype(str)
+                df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
+                df['Building'] = df['Name'].fillna(df['Building'])
+                df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
         except Exception as e:
-            print(f"[ERROR] in build_packaged_dataset (merging building names): {repr(e)}")
+            print(f"[ERROR] in build_packaged_dataset (merging data): {repr(e)}")
         
         return ensure_columns_and_order(df)
     except Exception as e:
@@ -235,6 +264,10 @@ def dashboard():
         unpackaged_df = build_unpackaged_dataset(building_code=selected_building_code)
         packaged_df = build_packaged_dataset(building_code=selected_building_code)
         
+        # Replace nan with empty string for display purposes
+        unpackaged_df = unpackaged_df.fillna('')
+        packaged_df = packaged_df.fillna('')
+        
         return render_template(
             "dashboard.html",
             title="SDI - Planon Process Management",
@@ -261,19 +294,16 @@ def export_to_sdi():
         return redirect(url_for("dashboard"))
 
     try:
-        df = build_sdi_dataset(building_code=building_code)
+        df = build_unpackaged_dataset(building_code=building_code) 
         if df.empty:
             flash(f"No new assets to export for the selected building.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
-        # --- VALIDATION FOR REQUIRED FIELDS ---
         required_cols = ["Description", "Asset Group", "Attribute"]
         for col in required_cols:
-            # Check for NaN, None, empty strings, and whitespace-only strings
             if df[col].isnull().any() or df[col].astype(str).str.strip().eq('').any():
                 flash('To create a package, the fields "Description", "Asset Group" and "Attribute" must be filled in', "danger")
                 return redirect(url_for("dashboard", building_code=building_code))
-        # --- END OF VALIDATION ---
 
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
@@ -325,22 +355,15 @@ def export_to_planon():
     force_export = request.form.get("force_planon_export", "false").lower() == "true"
     
     try:
-        with sqlite3.connect(DB_PATH, timeout=15) as conn:
-            query = "SELECT * FROM sdi_print_out"
-            params = []
-            if building_code:
-                query += " WHERE Building = ?"
-                params.append(building_code)
-            df = pd.read_sql_query(query, conn, params=params)
-
-            # Carrega a tabela de mapeamento de Asset Group
-            df_asset_group = pd.DataFrame()
-            if table_exists(conn, 'Asset_Group'):
-                df_asset_group = pd.read_sql_query('SELECT Name, "Full Classification" FROM Asset_Group', conn)
-
+        df = build_packaged_dataset(building_code=building_code)
         if df.empty:
             flash("No packaged assets to export to Planon.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
+
+        with sqlite3.connect(DB_PATH, timeout=15) as conn:
+            df_asset_group = pd.DataFrame()
+            if table_exists(conn, 'Asset_Group'):
+                df_asset_group = pd.read_sql_query('SELECT Name, "Full Classification" FROM Asset_Group', conn)
         
         if not force_export:
             already_exported = df[df["print_out"].astype(str) == "1"]
@@ -355,15 +378,11 @@ def export_to_planon():
              flash("All packaged assets have already been exported to Planon.", "info")
              return redirect(url_for("dashboard", building_code=building_code))
 
-        # --- LÓGICA DE MERGE DO ASSET GROUP ---
         if not df_asset_group.empty:
             
-            # --- NOVA REGRA ESPECIAL PARA "Panels" ---
-            # Corrigido: Adicionado .str antes de .lower()
             panels_mask = df_to_export['Asset Group'].str.strip().str.lower() == 'panels'
             df_to_export.loc[panels_mask, 'Asset Group'] = 'EL.21.306.4067'
 
-            # --- VALIDAÇÃO DE DUPLICADOS NO ASSET GROUP (para os restantes) ---
             other_assets_mask = ~panels_mask
             asset_groups_to_check = df_to_export.loc[other_assets_mask, 'Asset Group'].str.strip().unique()
 
@@ -380,7 +399,6 @@ def export_to_planon():
                     flash(error_message, "danger")
                     return redirect(url_for("dashboard", building_code=building_code))
 
-                # --- MERGE PARA OS RESTANTES ASSETS ---
                 other_assets_to_merge = df_to_export[other_assets_mask].copy()
                 other_assets_to_merge['Asset Group'] = other_assets_to_merge['Asset Group'].str.strip()
                 df_asset_group['Name'] = df_asset_group['Name'].str.strip()
@@ -394,7 +412,6 @@ def export_to_planon():
                 )
                 merged_others['Asset Group'] = merged_others['Full Classification'].fillna(merged_others['Asset Group'])
                 
-                # Atualiza o DataFrame original com os valores alterados
                 df_to_export.loc[other_assets_mask, 'Asset Group'] = merged_others['Asset Group']
 
         
@@ -406,19 +423,16 @@ def export_to_planon():
         for name, value in CONST_COLS.items():
             df2[name] = value
 
-        # --- LÓGICA PARA VOLTAGE RATING (UoM) ---
         if 'Voltage Rating' in df2.columns:
             df2['Voltage Rating (UoM)'] = ''
             condition = pd.notna(df2['Voltage Rating']) & (df2['Voltage Rating'].astype(str).str.strip() != '')
             df2.loc[condition, 'Voltage Rating (UoM)'] = 'V'
 
-        # --- LÓGICA PARA AMPERAGE RATING (UoM) ---
         if 'Amperage Rating' in df2.columns:
             df2['Amperage Rating (UoM)'] = ''
             condition = pd.notna(df2['Amperage Rating']) & (df2['Amperage Rating'].astype(str).str.strip() != '')
             df2.loc[condition, 'Amperage Rating (UoM)'] = 'A'
 
-        # --- LÓGICA PARA DATE OF MANUFACTURE ---
         def format_year_to_date(year_str):
             if not year_str or pd.isna(year_str):
                 return year_str
@@ -439,7 +453,7 @@ def export_to_planon():
                         full_year = 2000 + year_val
                 
                 if full_year:
-                    return f"01/01/{full_year}"
+                    return f"{full_year}-01-01"
             return year_str
 
         if 'Date Of Manufacture Or Construction' in df2.columns:
@@ -499,5 +513,4 @@ def export_to_planon():
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8_003, debug=True)
-
 
