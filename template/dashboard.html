@@ -79,7 +79,7 @@
         <div class="tab-pane fade show active" id="unpackaged-assets-pane" role="tabpanel" aria-labelledby="unpackaged-tab">
           <div class="card tile mt-3">
             <div class="card-header bg-white d-flex justify-content-end align-items-center gap-2">
-                <form id="exportForm" action="{{ url_for('export_to_sdi') }}" method="POST" class="m-0">
+                <form id="exportForm" action="{{ url_for('export_to_sdi') }}" method="POST" class="m-0 tab-aware-form">
                   <input type="hidden" name="building_code" value="{{ selected_building }}">
                   <button id="exportButton" type="submit" class="btn ubc-btn shadow-sm">SDI Package</button>
                 </form>
@@ -113,7 +113,7 @@
         <div class="tab-pane fade" id="packaged-assets-pane" role="tabpanel" aria-labelledby="packaged-tab">
           <div class="row mt-3">
             <div class="col-md-5 col-lg-4">
-                <form id="excludePackageForm" action="{{ url_for('exclude_package') }}" method="POST">
+                <form id="excludePackageForm" action="{{ url_for('exclude_package') }}" method="POST" class="tab-aware-form">
                     <div class="d-flex align-items-end gap-2">
                         <div class="form-group">
                             <label for="sdi-control-select" class="form-label fw-bold">Filter by SDI Print Control:</label>
@@ -134,7 +134,7 @@
           </div>
            <div class="card tile mt-3">
             <div class="card-header bg-white d-flex justify-content-end align-items-center">
-                <form id="planonExportForm" action="{{ url_for('export_to_planon') }}" method="POST" class="m-0">
+                <form id="planonExportForm" action="{{ url_for('export_to_planon') }}" method="POST" class="m-0 tab-aware-form">
                     <input type="hidden" name="building_code" value="{{ selected_building }}">
                     <input type="hidden" id="planon-sdi-control-id" name="sdi_control_id" value="">
                     <button type="submit" class="btn ubc-btn shadow-sm">Export to Planon</button>
@@ -196,20 +196,54 @@
         const packagedTable = $('#packagedAssetsTable').DataTable(commonDataTableOptions);
         
         $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function (e) {
-            $.fn.dataTable.tables({ visible: true, api: true }).columns.adjust();
+            const targetPaneSelector = $(e.target).attr('data-bs-target');
+            const tableInPane = $(targetPaneSelector).find('table');
+
+            if ($.fn.DataTable.isDataTable(tableInPane)) {
+                setTimeout(function() {
+                    $(tableInPane).DataTable().columns.adjust();
+                }, 50);
+            }
         });
 
+        const hash = window.location.hash;
+        if (hash) {
+            const tabToActivate = $(`#assetTabs button[data-bs-target="${hash}"]`);
+            if (tabToActivate.length) {
+                const tab = new bootstrap.Tab(tabToActivate[0]);
+                tab.show();
+            }
+        }
+        
         $('#building-select').on('change', function() {
-          $('#buildingFilterForm').submit();
+          const form = $('#buildingFilterForm');
+          const baseUrl = form.attr('action');
+          const buildingCode = $(this).val();
+          
+          const activeTabHash = $('#assetTabs .nav-link.active').attr('data-bs-target');
+          
+          const newUrl = `${baseUrl}?building_code=${encodeURIComponent(buildingCode)}${activeTabHash}`;
+          window.location.href = newUrl;
         });
+
+        // --- INÍCIO DA NOVA SOLUÇÃO ---
+        // Este código adiciona a aba ativa como um campo oculto antes de submeter um formulário
+        $('form.tab-aware-form').on('submit', function(e) {
+            const activeTabHash = $('#assetTabs .nav-link.active').attr('data-bs-target');
+            if (activeTabHash) {
+                // Remove qualquer campo oculto antigo para evitar duplicatas
+                $(this).find('input[name="active_tab"]').remove();
+                // Adiciona o novo campo oculto com o nome da aba (sem o '#')
+                $(this).append(`<input type="hidden" name="active_tab" value="${activeTabHash.substring(1)}">`);
+            }
+        });
+        // --- FIM DA NOVA SOLUÇÃO ---
 
         $('#sdi-control-select').on('change', function() {
           const selectedValue = $(this).val();
           
-          // Update the hidden input in the Planon export form
           $('#planon-sdi-control-id').val(selectedValue);
           
-          // Filter the DataTables view
           packagedTable
             .column(0)
             .search(selectedValue ? '^' + selectedValue + '$' : '', true, false)

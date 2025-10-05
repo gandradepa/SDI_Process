@@ -314,22 +314,24 @@ def dashboard():
 def export_to_sdi():
     building_code = request.form.get("building_code")
     force_replace = request.form.get("force_replace", "false").lower() == "true"
+    # --- ALTERAÇÃO AQUI ---
+    active_tab_anchor = request.form.get("active_tab")
 
     if not building_code:
         flash("To create a pack, select only one building at time", "warning")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("dashboard", _anchor=active_tab_anchor))
 
     try:
         df = build_unpackaged_dataset(building_code=building_code) 
         if df.empty:
             flash(f"No new assets to export for the selected building.", "info")
-            return redirect(url_for("dashboard", building_code=building_code))
+            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         required_cols = ["Description", "Asset Group", "Attribute"]
         for col in required_cols:
             if df[col].isnull().any() or df[col].astype(str).str.strip().eq('').any():
                 flash('To create a package, the fields "Description", "Asset Group" and "Attribute" must be filled in', "danger")
-                return redirect(url_for("dashboard", building_code=building_code))
+                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
@@ -339,7 +341,7 @@ def export_to_sdi():
             if duplicate_codes:
                 message = f"CONFIRM:{','.join(duplicate_codes)}"
                 flash(message, "confirmation")
-                return redirect(url_for("dashboard", building_code=building_code))
+                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
         
         _check_db_writable(DB_PATH)
         with sqlite3.connect(DB_PATH, timeout=20) as conn:
@@ -383,16 +385,18 @@ def export_to_sdi():
         print(f"[ERROR] in export_to_sdi: {repr(e)}")
         flash(f"⚠️ Could not record the export. {str(e)}", "danger")
     
-    return redirect(url_for("dashboard", building_code=building_code))
+    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
 @app.route("/exclude_package", methods=["POST"])
 def exclude_package():
     sdi_control_id = request.form.get("sdi_control_id")
     building_code = request.form.get("building_code")
+    # --- ALTERAÇÃO AQUI ---
+    active_tab_anchor = request.form.get("active_tab")
 
     if not sdi_control_id:
         flash("⚠️ Please select a package to exclude.", "warning")
-        return redirect(url_for("dashboard", building_code=building_code))
+        return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
     try:
         _check_db_writable(DB_PATH)
@@ -411,7 +415,7 @@ def exclude_package():
         print(f"[ERROR] in exclude_package: {repr(e)}")
         flash(f"⚠️ Could not exclude the package. {str(e)}", "danger")
 
-    return redirect(url_for("dashboard", building_code=building_code))
+    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
 
 @app.route("/export-planon", methods=["POST"])
@@ -419,20 +423,21 @@ def export_to_planon():
     building_code = request.form.get("building_code")
     sdi_control_id = request.form.get("sdi_control_id")
     force_export = request.form.get("force_planon_export", "false").lower() == "true"
+    # --- ALTERAÇÃO AQUI ---
+    active_tab_anchor = request.form.get("active_tab")
     
     try:
         if not sdi_control_id:
             flash("To export, you must select a unique 'SDI Print Control' value.", "warning")
-            return redirect(url_for("dashboard", building_code=building_code))
+            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         df = build_packaged_dataset(building_code=building_code)
         
-        # Filter the dataframe to only the selected package ID
         df = df[df["id_print_out"] == sdi_control_id].copy()
 
         if df.empty:
             flash(f"No assets found for SDI Print Control '{sdi_control_id}'.", "info")
-            return redirect(url_for("dashboard", building_code=building_code))
+            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
             df_asset_group = pd.DataFrame()
@@ -445,12 +450,12 @@ def export_to_planon():
                 codes = already_exported["QR Code"].tolist()
                 message = f"PLANON_CONFIRM:{','.join(codes)}"
                 flash(message, "planon_confirmation")
-                return redirect(url_for("dashboard", building_code=building_code))
+                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         df_to_export = df[df["print_out"].astype(str) == "0"] if not force_export else df
         if df_to_export.empty and not force_export:
              flash("All assets for this package have already been exported to Planon.", "info")
-             return redirect(url_for("dashboard", building_code=building_code))
+             return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
         if not df_asset_group.empty:
             panels_mask = df_to_export['Asset Group'].str.strip().str.lower() == 'panels'
@@ -470,7 +475,7 @@ def export_to_planon():
                     
                     error_message = f"The Asset Group is duplicated for QR Codes: {qr_codes_str}. This field must have a unique value."
                     flash(error_message, "danger")
-                    return redirect(url_for("dashboard", building_code=building_code))
+                    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
                 other_assets_to_merge = df_to_export[other_assets_mask].copy()
                 other_assets_to_merge['Asset Group'] = other_assets_to_merge['Asset Group'].str.strip()
@@ -586,7 +591,7 @@ def export_to_planon():
     except Exception as e:
         print(f"[ERROR] in export_to_planon: {repr(e)}")
         flash(f"⚠️ An unexpected error occurred: {str(e)}", "danger")
-        return redirect(url_for("dashboard", building_code=building_code))
+        return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
 
 # -----------------------------------------------------------------------------
 # Main
