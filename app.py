@@ -31,7 +31,7 @@ app.secret_key = "replace-with-a-strong-secret"
 # Columns & Mappings
 # -----------------------------------------------------------------------------
 MASTER_COLS = [
-    "QR Code", "Building", "Description", "Asset Group", "UBC Tag", "Serial", "Model",
+    "id_print_out", "QR Code", "Building", "Description", "Asset Group", "UBC Tag", "Serial", "Model",
     "Manufacturer", "Attribute", "Ampere", "Supply From", "Volts", "Location", "Space",
     "Diameter", "Technical Safety BC", "Year"
 ]
@@ -43,8 +43,8 @@ COLUMN_RENAME_MAP: Dict[str, str] = {
     "Asset Group": "Asset Group", "UBC Tag": "Asset Tag", "Serial": "Serial Number",
     "Model": "Model", "Manufacturer": "Make", "Attribute": "Attribute Set",
     "Ampere": "Amperage Rating", "Supply From": "Fed From Equipment ID",
-    "Volts": "Voltage Rating", "Location": "Space Details", "Space": "Space.Space number", 
-    "Diameter": "Diameter", "Technical Safety BC": "Previous (OLD) ID", 
+    "Volts": "Voltage Rating", "Location": "Space Details", "Space": "Space.Space number",
+    "Diameter": "Diameter", "Technical Safety BC": "Previous (OLD) ID",
     "Year": "Date Of Manufacture Or Construction",
 }
 
@@ -134,7 +134,7 @@ def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
     try:
         df = build_sdi_dataset(building_code=building_code).copy()
         if df.empty:
-            return pd.DataFrame(columns=MASTER_COLS)
+            return pd.DataFrame()
             
         df["QR Code"] = df["QR Code"].astype(str).str.strip()
         
@@ -145,10 +145,6 @@ def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
         try:
             with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 qr_codes_df = pd.read_sql_query('SELECT "QR_code_ID", "Location" FROM QR_codes', conn)
-                
-                df_buildings = pd.DataFrame()
-                if table_exists(conn, 'Buildings'):
-                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
 
             qr_codes_df = qr_codes_df.rename(columns={"Location": "Space"})
             
@@ -156,70 +152,44 @@ def build_unpackaged_dataset(building_code: str = None) -> pd.DataFrame:
             qr_codes_df['merge_key'] = pd.to_numeric(qr_codes_df['QR_code_ID'], errors='coerce')
             
             df = pd.merge(df, qr_codes_df[['merge_key', 'Space']], on='merge_key', how='left')
-
-            # Process "Space" column to keep only the value before the first space
             df['Space'] = df['Space'].fillna('').astype(str).apply(lambda x: x.split(' ')[0])
-            
             df = df.drop(columns=['merge_key'])
-
-            if not df_buildings.empty:
-                df_buildings['Code'] = df_buildings['Code'].astype(str)
-                df['Building_Code_For_Merge'] = df['Building'].astype(str)
-                df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
-                df['Building'] = df['Name'].fillna(df['Building'])
-                df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
 
         except Exception as e:
             print(f"[ERROR] in build_unpackaged_dataset (merging data): {repr(e)}")
 
-        return ensure_columns_and_order(df)
+        return df
     except Exception as e:
         print(f"[ERROR] in build_unpackaged_dataset (main block): {repr(e)}")
-        return pd.DataFrame(columns=MASTER_COLS)
+        return pd.DataFrame()
 
 def build_packaged_dataset(building_code: str = None) -> pd.DataFrame:
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             if not table_exists(conn, 'sdi_print_out'):
-                return pd.DataFrame(columns=MASTER_COLS)
+                return pd.DataFrame()
             df = pd.read_sql_query('SELECT * FROM sdi_print_out', conn)
-
-            qr_codes_df = pd.read_sql_query('SELECT "QR_code_ID", "Location" FROM QR_codes', conn)
             
-            df_buildings = pd.DataFrame()
-            if table_exists(conn, 'Buildings'):
-                df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+            if building_code:
+                building_name = None
+                if table_exists(conn, 'Buildings'):
+                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+                    df_buildings['Code'] = df_buildings['Code'].astype(str)
+                    match = df_buildings[df_buildings['Code'] == str(building_code)]
+                    if not match.empty:
+                        building_name = match['Name'].iloc[0]
 
-        if building_code:
-            df = df[df['Building'].astype(str) == str(building_code)]
-
-        try:
-            qr_codes_df = qr_codes_df.rename(columns={"Location": "Space"})
-
-            df['merge_key'] = pd.to_numeric(df['QR Code'], errors='coerce')
-            qr_codes_df['merge_key'] = pd.to_numeric(qr_codes_df['QR_code_ID'], errors='coerce')
-
-            df = pd.merge(df, qr_codes_df[['merge_key', 'Space']], on='merge_key', how='left')
-
-            # Process "Space" column to keep only the value before the first space
-            df['Space'] = df['Space'].fillna('').astype(str).apply(lambda x: x.split(' ')[0])
-
-            df = df.drop(columns=['merge_key'])
-
-            if not df_buildings.empty:
-                df_buildings['Code'] = df_buildings['Code'].astype(str)
-                df['Building_Code_For_Merge'] = df['Building'].astype(str)
-                df = pd.merge(df, df_buildings, left_on='Building_Code_For_Merge', right_on='Code', how='left')
-                df['Building'] = df['Name'].fillna(df['Building'])
-                df = df.drop(columns=['Code', 'Name', 'Building_Code_For_Merge'], errors='ignore')
-        except Exception as e:
-            print(f"[ERROR] in build_packaged_dataset (merging data): {repr(e)}")
+                code_mask = (df['Building'].astype(str) == str(building_code))
+                if building_name:
+                    name_mask = (df['Building'].astype(str) == str(building_name))
+                    df = df[code_mask | name_mask].copy()
+                else:
+                    df = df[code_mask].copy()
         
-        return ensure_columns_and_order(df)
+        return df
     except Exception as e:
         print(f"[ERROR] in build_packaged_dataset: {repr(e)}")
-        return pd.DataFrame(columns=MASTER_COLS)
-
+        return pd.DataFrame()
 
 def _check_db_writable(path: str):
     folder = os.path.dirname(path) or "."
@@ -252,6 +222,32 @@ def _normalize_name(text: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z]+", " ", s).strip().lower()
     return re.sub(r"\s+", " ", s)
 
+def get_next_sdi_package_id(conn) -> str:
+    cur = conn.cursor()
+    
+    if not table_exists(conn, "sdi_sequence"):
+        cur.execute("CREATE TABLE sdi_sequence (last_value INTEGER)")
+        initial_value = 0
+        try:
+            if table_exists(conn, "sdi_print_out"):
+                cur.execute('SELECT MAX(id_print_out) FROM sdi_print_out WHERE id_print_out IS NOT NULL AND id_print_out != ""')
+                max_id = cur.fetchone()[0]
+                if max_id and max_id.startswith("SDI-"):
+                    initial_value = int(max_id.split('-')[-1])
+        except (sqlite3.OperationalError, IndexError, ValueError):
+            pass
+        
+        cur.execute("INSERT INTO sdi_sequence (last_value) VALUES (?)", (initial_value,))
+
+    cur.execute("SELECT last_value FROM sdi_sequence")
+    last_value = cur.fetchone()[0]
+    
+    new_value = last_value + 1
+    
+    cur.execute("UPDATE sdi_sequence SET last_value = ?", (new_value,))
+
+    return f"SDI-{new_value:05d}"
+
 # -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
@@ -263,21 +259,51 @@ def dashboard():
         all_buildings = get_all_buildings()
         unpackaged_df = build_unpackaged_dataset(building_code=selected_building_code)
         packaged_df = build_packaged_dataset(building_code=selected_building_code)
+
+        # Ensure data is formatted correctly for display
+        packaged_df = ensure_columns_and_order(packaged_df)
+        unpackaged_df = ensure_columns_and_order(unpackaged_df)
         
-        # Replace nan with empty string for display purposes
+        sdi_print_controls = []
+        if not packaged_df.empty and "id_print_out" in packaged_df.columns:
+            sdi_print_controls = sorted(packaged_df[packaged_df["id_print_out"].notna()]["id_print_out"].unique())
+
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                if table_exists(conn, 'Buildings'):
+                    df_buildings = pd.read_sql_query('SELECT Code, Name FROM Buildings', conn)
+                    df_buildings['Code'] = df_buildings['Code'].astype(str)
+                    
+                    building_map = pd.Series(df_buildings.Name.values, index=df_buildings.Code).to_dict()
+
+                    if not unpackaged_df.empty:
+                        unpackaged_df['Building'] = unpackaged_df['Building'].map(building_map).fillna(unpackaged_df['Building'])
+
+                    if not packaged_df.empty:
+                        packaged_df['Building'] = packaged_df['Building'].map(building_map).fillna(packaged_df['Building'])
+        except Exception as e:
+             print(f"[ERROR] in dashboard (enriching building name): {repr(e)}")
+             flash("Could not display building names correctly.", "warning")
+
+        display_rename_map = {"id_print_out": "SDI Print Control"}
+        display_columns = [display_rename_map.get(c, c) for c in MASTER_COLS]
+        unpackaged_df.rename(columns=display_rename_map, inplace=True)
+        packaged_df.rename(columns=display_rename_map, inplace=True)
+
         unpackaged_df = unpackaged_df.fillna('')
         packaged_df = packaged_df.fillna('')
         
         return render_template(
             "dashboard.html",
             title="SDI - Planon Process Management",
-            columns=MASTER_COLS,
+            columns=display_columns,
             unpackaged_rows=unpackaged_df.to_dict(orient="records"),
             packaged_rows=packaged_df.to_dict(orient="records"),
             logo_main_name=LOGO_MAIN_NAME,
             logo_fac_name=LOGO_FAC_NAME,
             all_buildings=all_buildings,
-            selected_building=selected_building_code
+            selected_building=selected_building_code,
+            sdi_print_controls=sdi_print_controls
         )
     except Exception as e:
         print(f"[FATAL ERROR] in dashboard route: {repr(e)}")
@@ -315,33 +341,43 @@ def export_to_sdi():
                 flash(message, "confirmation")
                 return redirect(url_for("dashboard", building_code=building_code))
         
-        now = datetime.now()
-        df_print = df.copy()
-        for c in PRINT_OUT_COLS:
-            if c not in df_print.columns:
-                df_print[c] = ""
-        df_print["print_out"] = 0
-        df_print["date"] = now.strftime("%Y-%m-%d")
-        df_print["time"] = now.strftime("%H:%M:%S")
-        df_print = df_print.loc[:, PRINT_OUT_COLS]
-
         _check_db_writable(DB_PATH)
         with sqlite3.connect(DB_PATH, timeout=20) as conn:
+            cur = conn.cursor()
+            
             conn.execute(f'''CREATE TABLE IF NOT EXISTS sdi_print_out ({", ".join(f'"{col}" TEXT' for col in PRINT_OUT_COLS)})''')
+            
+            cur.execute("PRAGMA table_info(sdi_print_out)")
+            existing_cols = {info[1] for info in cur.fetchall()}
+            if "id_print_out" not in existing_cols:
+                cur.execute('ALTER TABLE sdi_print_out ADD COLUMN "id_print_out" TEXT')
+
+            new_package_id = get_next_sdi_package_id(conn)
+            
+            now = datetime.now()
+            df_print = df.copy()
+            for c in PRINT_OUT_COLS:
+                if c not in df_print.columns:
+                    df_print[c] = ""
+
+            df_print["id_print_out"] = new_package_id
+            df_print["print_out"] = 0
+            df_print["date"] = now.strftime("%Y-%m-%d")
+            df_print["time"] = now.strftime("%H:%M:%S")
+            df_print = df_print.loc[:, PRINT_OUT_COLS]
+
             if force_replace:
                 codes_to_replace = df_print["QR Code"].tolist()
                 if codes_to_replace:
                     placeholders = ','.join('?' for _ in codes_to_replace)
-                    cur = conn.cursor()
                     cur.execute(f'DELETE FROM sdi_print_out WHERE "QR Code" IN ({placeholders})', codes_to_replace)
-                    conn.commit()
 
             df_print.to_sql("sdi_print_out", conn, if_exists="append", index=False)
         
         if force_replace:
-            flash(f"✅ Replaced and exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+            flash(f"✅ Replaced and exported {len(df_print)} rows to package {new_package_id} successfully.", "success")
         else:
-            flash(f"✅ Exported {len(df_print)} rows for the selected building to SDI successfully.", "success")
+            flash(f"✅ Exported {len(df_print)} rows to package {new_package_id} successfully.", "success")
 
     except Exception as e:
         print(f"[ERROR] in export_to_sdi: {repr(e)}")
@@ -349,15 +385,53 @@ def export_to_sdi():
     
     return redirect(url_for("dashboard", building_code=building_code))
 
+@app.route("/exclude_package", methods=["POST"])
+def exclude_package():
+    sdi_control_id = request.form.get("sdi_control_id")
+    building_code = request.form.get("building_code")
+
+    if not sdi_control_id:
+        flash("⚠️ Please select a package to exclude.", "warning")
+        return redirect(url_for("dashboard", building_code=building_code))
+
+    try:
+        _check_db_writable(DB_PATH)
+        with sqlite3.connect(DB_PATH, timeout=20) as conn:
+            cur = conn.cursor()
+            cur.execute('DELETE FROM sdi_print_out WHERE "id_print_out" = ?', (sdi_control_id,))
+            deleted_rows = cur.rowcount
+            conn.commit()
+        
+        if deleted_rows > 0:
+            flash(f"✅ Package {sdi_control_id} ({deleted_rows} assets) has been excluded and returned to Unpackaged Assets.", "success")
+        else:
+            flash(f"🤔 Package {sdi_control_id} was not found or was already empty.", "info")
+
+    except Exception as e:
+        print(f"[ERROR] in exclude_package: {repr(e)}")
+        flash(f"⚠️ Could not exclude the package. {str(e)}", "danger")
+
+    return redirect(url_for("dashboard", building_code=building_code))
+
+
 @app.route("/export-planon", methods=["POST"])
 def export_to_planon():
     building_code = request.form.get("building_code")
+    sdi_control_id = request.form.get("sdi_control_id")
     force_export = request.form.get("force_planon_export", "false").lower() == "true"
     
     try:
+        if not sdi_control_id:
+            flash("To export, you must select a unique 'SDI Print Control' value.", "warning")
+            return redirect(url_for("dashboard", building_code=building_code))
+
         df = build_packaged_dataset(building_code=building_code)
+        
+        # Filter the dataframe to only the selected package ID
+        df = df[df["id_print_out"] == sdi_control_id].copy()
+
         if df.empty:
-            flash("No packaged assets to export to Planon.", "info")
+            flash(f"No assets found for SDI Print Control '{sdi_control_id}'.", "info")
             return redirect(url_for("dashboard", building_code=building_code))
 
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
@@ -375,11 +449,10 @@ def export_to_planon():
 
         df_to_export = df[df["print_out"].astype(str) == "0"] if not force_export else df
         if df_to_export.empty and not force_export:
-             flash("All packaged assets have already been exported to Planon.", "info")
+             flash("All assets for this package have already been exported to Planon.", "info")
              return redirect(url_for("dashboard", building_code=building_code))
 
         if not df_asset_group.empty:
-            
             panels_mask = df_to_export['Asset Group'].str.strip().str.lower() == 'panels'
             df_to_export.loc[panels_mask, 'Asset Group'] = 'EL.21.306.4067'
 
@@ -411,13 +484,20 @@ def export_to_planon():
                     how='left'
                 )
                 merged_others['Asset Group'] = merged_others['Full Classification'].fillna(merged_others['Asset Group'])
-                
                 df_to_export.loc[other_assets_mask, 'Asset Group'] = merged_others['Asset Group']
 
         
         building_label = _get_building_label_for_filename(df_to_export)
         date_str = datetime.now().strftime("%m_%d_%Y")
-        output_filename = f"SDI_Process_{date_str}_{building_label}.xlsx"
+        
+        sdi_control_ids = df_to_export["id_print_out"].dropna().unique()
+        sdi_control_label = ""
+        if len(sdi_control_ids) == 1:
+            sdi_control_label = f"{_safe_filename(sdi_control_ids[0])}_"
+        elif len(sdi_control_ids) > 1:
+            sdi_control_label = "MULTI-Package_"
+
+        output_filename = f"SDI_Process_{sdi_control_label}{date_str}_{building_label}.xlsx"
 
         df2 = df_to_export.rename(columns=COLUMN_RENAME_MAP)
         for name, value in CONST_COLS.items():
