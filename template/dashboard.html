@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet" />
 
     <link href="{{ url_for('static', filename='style.css', v=26) }}" rel="stylesheet" />
@@ -14,14 +15,34 @@
       .ubc-brand {
         font-size: 2.1rem;
       }
-      /* Adds significant space between DataTables controls and the table */
       .dataTables_wrapper .row:first-child {
         margin-bottom: 1.25rem !important;
+      }
+      .user-nav {
+        background-color: #f8f9fa;
+        border-bottom: 1px solid #dee2e6;
       }
     </style>
   </head>
   <body class="ubc-body">
     <div class="ubc-top-strip"></div>
+
+    <nav class="user-nav py-2">
+      <div class="container-fluid d-flex justify-content-end">
+        {% if current_user.is_authenticated %}
+        <div class="dropdown">
+          <button class="btn btn-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-person-fill"></i> Welcome, <strong>{{ username }}</strong>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="{{ url_for('main.change_password') }}">Change Password</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}">Logout</a></li>
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+    </nav>
 
     <header class="ubc-navbar">
       <div class="container-fluid">
@@ -50,8 +71,7 @@
     <main class="container-fluid my-3">
       <div class="row mb-3">
         <div class="col-md-5 col-lg-4">
-          <form id="buildingFilterForm" action="{{ url_for('dashboard') }}" method="GET">
-            <div class="form-group">
+          <form id="buildingFilterForm" action="{{ url_for('main.dashboard') }}" method="GET"> <div class="form-group">
               <label for="building-select" class="form-label fw-bold">Filter by Building:</label>
               <select name="building_code" id="building-select" class="form-select shadow-sm">
                 <option value="">-- All Buildings --</option>
@@ -79,8 +99,7 @@
         <div class="tab-pane fade show active" id="unpackaged-assets-pane" role="tabpanel" aria-labelledby="unpackaged-tab">
           <div class="card tile mt-3">
             <div class="card-header bg-white d-flex justify-content-end align-items-center gap-2">
-                <form id="exportForm" action="{{ url_for('export_to_sdi') }}" method="POST" class="m-0 tab-aware-form">
-                  <input type="hidden" name="building_code" value="{{ selected_building }}">
+                <form id="exportForm" action="{{ url_for('main.export_to_sdi') }}" method="POST" class="m-0 tab-aware-form"> <input type="hidden" name="building_code" value="{{ selected_building }}">
                   <button id="exportButton" type="submit" class="btn ubc-btn shadow-sm">SDI Package</button>
                 </form>
             </div>
@@ -113,8 +132,7 @@
         <div class="tab-pane fade" id="packaged-assets-pane" role="tabpanel" aria-labelledby="packaged-tab">
           <div class="row mt-3">
             <div class="col-md-5 col-lg-4">
-                <form id="excludePackageForm" action="{{ url_for('exclude_package') }}" method="POST" class="tab-aware-form">
-                    <div class="d-flex align-items-end gap-2">
+                <form id="excludePackageForm" action="{{ url_for('main.exclude_package') }}" method="POST" class="tab-aware-form"> <div class="d-flex align-items-end gap-2">
                         <div class="form-group">
                             <label for="sdi-control-select" class="form-label fw-bold">Filter by SDI Print Control:</label>
                             <select id="sdi-control-select" name="sdi_control_id" class="form-select shadow-sm">
@@ -134,8 +152,7 @@
           </div>
            <div class="card tile mt-3">
             <div class="card-header bg-white d-flex justify-content-end align-items-center">
-                <form id="planonExportForm" action="{{ url_for('export_to_planon') }}" method="POST" class="m-0 tab-aware-form">
-                    <input type="hidden" name="building_code" value="{{ selected_building }}">
+                <form id="planonExportForm" action="{{ url_for('main.export_to_planon') }}" method="POST" class="m-0 tab-aware-form"> <input type="hidden" name="building_code" value="{{ selected_building }}">
                     <input type="hidden" id="planon-sdi-control-id" name="sdi_control_id" value="">
                     <button type="submit" class="btn ubc-btn shadow-sm">Export to Planon</button>
                 </form>
@@ -181,6 +198,7 @@
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
     <script>
+      // NO CHANGES TO SCRIPT SECTION
       $(function () {
         const commonDataTableOptions = {
           pageLength: 25,
@@ -226,18 +244,13 @@
           window.location.href = newUrl;
         });
 
-        // --- INÍCIO DA NOVA SOLUÇÃO ---
-        // Este código adiciona a aba ativa como um campo oculto antes de submeter um formulário
         $('form.tab-aware-form').on('submit', function(e) {
             const activeTabHash = $('#assetTabs .nav-link.active').attr('data-bs-target');
             if (activeTabHash) {
-                // Remove qualquer campo oculto antigo para evitar duplicatas
                 $(this).find('input[name="active_tab"]').remove();
-                // Adiciona o novo campo oculto com o nome da aba (sem o '#')
                 $(this).append(`<input type="hidden" name="active_tab" value="${activeTabHash.substring(1)}">`);
             }
         });
-        // --- FIM DA NOVA SOLUÇÃO ---
 
         $('#sdi-control-select').on('change', function() {
           const selectedValue = $(this).val();

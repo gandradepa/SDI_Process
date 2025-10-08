@@ -1,13 +1,28 @@
+## /home/developer/SDI_process/app.py
+
 import os
 import re
+import sys  # NEW
 import sqlite3
 from datetime import datetime
 from io import BytesIO
 from typing import Dict, List
 
 import pandas as pd
-from flask import Flask, render_template, redirect, url_for, flash, request, send_file
+from flask import (  # MODIFIED
+    Flask, render_template, redirect, url_for, flash,
+    request, send_file, Blueprint
+)
 from openpyxl import load_workbook
+
+## NEW -> Import authentication and environment variable libraries
+from flask_login import login_user, logout_user, login_required, current_user
+from dotenv import load_dotenv
+
+## NEW -> Add the shared auth_service directory to Python's path
+sys.path.append('/home/developer/auth_service')
+from auth_model import db, bcrypt, User
+from auth_controller import login_manager
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -22,22 +37,32 @@ LOGO_MAIN_NAME = "ubc_logo.jpg"
 LOGO_FAC_NAME = "ubc-facilities_logo.jpg"
 
 # -----------------------------------------------------------------------------
-# Flask
+# Flask App Configuration
 # -----------------------------------------------------------------------------
+## NEW -> Load environment variables from the central .env file
+load_dotenv('/home/developer/.env')
+
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, static_url_path="/static")
-app.secret_key = "replace-with-a-strong-secret"
+
+## NEW -> Configure the app using variables from the .env file for security and SSO
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI')
+app.config['SESSION_COOKIE_DOMAIN'] = os.getenv('SESSION_COOKIE_DOMAIN')
+
+## NEW -> Connect the extensions (db, bcrypt, login_manager) to this specific app
+db.init_app(app)
+bcrypt.init_app(app)
+login_manager.init_app(app)
 
 # -----------------------------------------------------------------------------
-# Columns & Mappings
+# Columns & Mappings (No changes in this section)
 # -----------------------------------------------------------------------------
 MASTER_COLS = [
     "id_print_out", "QR Code", "Building", "Description", "Asset Group", "UBC Tag", "Serial", "Model",
     "Manufacturer", "Attribute", "Ampere", "Supply From", "Volts", "Location", "Space",
     "Diameter", "Technical Safety BC", "Year"
 ]
-
 PRINT_OUT_COLS = MASTER_COLS + ["print_out", "date", "time"]
-
 COLUMN_RENAME_MAP: Dict[str, str] = {
     "QR Code": "Code", "Building": "Property", "Description": "Description",
     "Asset Group": "Asset Group", "UBC Tag": "Asset Tag", "Serial": "Serial Number",
@@ -47,13 +72,12 @@ COLUMN_RENAME_MAP: Dict[str, str] = {
     "Diameter": "Diameter", "Technical Safety BC": "Previous (OLD) ID",
     "Year": "Date Of Manufacture Or Construction",
 }
-
 CONST_COLS: Dict[str, object] = {
     "Is Missing (Y/N)": False, "Simple": True, "Is Planned Maintenance Required? (Y/N)": False,
 }
 
 # -----------------------------------------------------------------------------
-# Helpers
+# Helpers (No changes in this section, except for function definitions)
 # -----------------------------------------------------------------------------
 def table_exists(conn, table_name):
     cur = conn.cursor()
@@ -248,10 +272,43 @@ def get_next_sdi_package_id(conn) -> str:
 
     return f"SDI-{new_value:05d}"
 
-# -----------------------------------------------------------------------------
-# Routes
-# -----------------------------------------------------------------------------
-@app.route("/")
+##-------------------------------------------------------------##
+## NEW: Authentication Routes Blueprint                        ##
+##-------------------------------------------------------------##
+auth_bp = Blueprint('auth', __name__, template_folder='template')
+
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('main.dashboard'))
+    
+    if request.method == 'POST':
+        user = User.query.filter_by(username=request.form.get('username')).first()
+        if user and user.check_password(request.form.get('password')):
+            login_user(user, remember=request.form.get('remember'))
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('main.dashboard'))
+        else:
+            flash('Invalid username or password.', 'danger')
+            return redirect(url_for('auth.login'))
+            
+    return render_template('login.html', title="Login - SDI Process")
+
+@auth_bp.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('auth.login'))
+
+app.register_blueprint(auth_bp)
+
+##-------------------------------------------------------------##
+## NEW: Main Application Routes Blueprint                      ##
+##-------------------------------------------------------------##
+main_bp = Blueprint('main', __name__, template_folder='template')
+
+@main_bp.route("/")
+@login_required # NEW
 def dashboard():
     try:
         selected_building_code = request.args.get("building_code", "")
@@ -260,7 +317,6 @@ def dashboard():
         unpackaged_df = build_unpackaged_dataset(building_code=selected_building_code)
         packaged_df = build_packaged_dataset(building_code=selected_building_code)
 
-        # Ensure data is formatted correctly for display
         packaged_df = ensure_columns_and_order(packaged_df)
         unpackaged_df = ensure_columns_and_order(unpackaged_df)
         
@@ -303,35 +359,36 @@ def dashboard():
             logo_fac_name=LOGO_FAC_NAME,
             all_buildings=all_buildings,
             selected_building=selected_building_code,
-            sdi_print_controls=sdi_print_controls
+            sdi_print_controls=sdi_print_controls,
+            username=current_user.username  # NEW
         )
     except Exception as e:
         print(f"[FATAL ERROR] in dashboard route: {repr(e)}")
         flash("A critical error occurred while loading the dashboard. Please check the console log.", "danger")
-        return render_template("dashboard.html", title="Error", columns=MASTER_COLS, unpackaged_rows=[], packaged_rows=[], all_buildings=[])
+        return render_template("dashboard.html", title="Error", columns=MASTER_COLS, unpackaged_rows=[], packaged_rows=[], all_buildings=[], username=current_user.username)
 
-@app.route("/export", methods=["POST"])
+@main_bp.route("/export", methods=["POST"])
+@login_required # NEW
 def export_to_sdi():
     building_code = request.form.get("building_code")
     force_replace = request.form.get("force_replace", "false").lower() == "true"
-    # --- ALTERAÇÃO AQUI ---
     active_tab_anchor = request.form.get("active_tab")
 
     if not building_code:
         flash("To create a pack, select only one building at time", "warning")
-        return redirect(url_for("dashboard", _anchor=active_tab_anchor))
+        return redirect(url_for("main.dashboard", _anchor=active_tab_anchor)) # MODIFIED
 
     try:
         df = build_unpackaged_dataset(building_code=building_code) 
         if df.empty:
             flash(f"No new assets to export for the selected building.", "info")
-            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+            return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         required_cols = ["Description", "Asset Group", "Attribute"]
         for col in required_cols:
             if df[col].isnull().any() or df[col].astype(str).str.strip().eq('').any():
                 flash('To create a package, the fields "Description", "Asset Group" and "Attribute" must be filled in', "danger")
-                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+                return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         if not force_replace:
             existing_codes = get_codes_in_print_out_table()
@@ -341,7 +398,7 @@ def export_to_sdi():
             if duplicate_codes:
                 message = f"CONFIRM:{','.join(duplicate_codes)}"
                 flash(message, "confirmation")
-                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+                return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
         
         _check_db_writable(DB_PATH)
         with sqlite3.connect(DB_PATH, timeout=20) as conn:
@@ -385,18 +442,18 @@ def export_to_sdi():
         print(f"[ERROR] in export_to_sdi: {repr(e)}")
         flash(f"⚠️ Could not record the export. {str(e)}", "danger")
     
-    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+    return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
-@app.route("/exclude_package", methods=["POST"])
+@main_bp.route("/exclude_package", methods=["POST"])
+@login_required # NEW
 def exclude_package():
     sdi_control_id = request.form.get("sdi_control_id")
     building_code = request.form.get("building_code")
-    # --- ALTERAÇÃO AQUI ---
     active_tab_anchor = request.form.get("active_tab")
 
     if not sdi_control_id:
         flash("⚠️ Please select a package to exclude.", "warning")
-        return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+        return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
     try:
         _check_db_writable(DB_PATH)
@@ -415,21 +472,21 @@ def exclude_package():
         print(f"[ERROR] in exclude_package: {repr(e)}")
         flash(f"⚠️ Could not exclude the package. {str(e)}", "danger")
 
-    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+    return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
 
-@app.route("/export-planon", methods=["POST"])
+@main_bp.route("/export-planon", methods=["POST"])
+@login_required # NEW
 def export_to_planon():
     building_code = request.form.get("building_code")
     sdi_control_id = request.form.get("sdi_control_id")
     force_export = request.form.get("force_planon_export", "false").lower() == "true"
-    # --- ALTERAÇÃO AQUI ---
     active_tab_anchor = request.form.get("active_tab")
     
     try:
         if not sdi_control_id:
             flash("To export, you must select a unique 'SDI Print Control' value.", "warning")
-            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+            return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         df = build_packaged_dataset(building_code=building_code)
         
@@ -437,7 +494,7 @@ def export_to_planon():
 
         if df.empty:
             flash(f"No assets found for SDI Print Control '{sdi_control_id}'.", "info")
-            return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+            return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         with sqlite3.connect(DB_PATH, timeout=15) as conn:
             df_asset_group = pd.DataFrame()
@@ -450,12 +507,12 @@ def export_to_planon():
                 codes = already_exported["QR Code"].tolist()
                 message = f"PLANON_CONFIRM:{','.join(codes)}"
                 flash(message, "planon_confirmation")
-                return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+                return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         df_to_export = df[df["print_out"].astype(str) == "0"] if not force_export else df
         if df_to_export.empty and not force_export:
              flash("All assets for this package have already been exported to Planon.", "info")
-             return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+             return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
         if not df_asset_group.empty:
             panels_mask = df_to_export['Asset Group'].str.strip().str.lower() == 'panels'
@@ -475,7 +532,7 @@ def export_to_planon():
                     
                     error_message = f"The Asset Group is duplicated for QR Codes: {qr_codes_str}. This field must have a unique value."
                     flash(error_message, "danger")
-                    return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+                    return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
 
                 other_assets_to_merge = df_to_export[other_assets_mask].copy()
                 other_assets_to_merge['Asset Group'] = other_assets_to_merge['Asset Group'].str.strip()
@@ -591,10 +648,45 @@ def export_to_planon():
     except Exception as e:
         print(f"[ERROR] in export_to_planon: {repr(e)}")
         flash(f"⚠️ An unexpected error occurred: {str(e)}", "danger")
-        return redirect(url_for("dashboard", building_code=building_code, _anchor=active_tab_anchor))
+        return redirect(url_for("main.dashboard", building_code=building_code, _anchor=active_tab_anchor)) # MODIFIED
+
+@main_bp.route('/change-password', methods=['GET', 'POST']) # NEW
+@login_required
+def change_password():
+    if request.method == 'POST':
+        old_password = request.form.get('old_password')
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+
+        if not current_user.check_password(old_password):
+            flash('Your old password was entered incorrectly. Please try again.', 'danger')
+            return redirect(url_for('main.change_password'))
+
+        if new_password != confirm_password:
+            flash('New passwords do not match.', 'danger')
+            return redirect(url_for('main.change_password'))
+
+        if len(new_password) < 8:
+            flash('New password must be at least 8 characters long.', 'danger')
+            return redirect(url_for('main.change_password'))
+
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', new_password):
+            flash('New password must contain at least one special character (e.g., !@#$%).', 'danger')
+            return redirect(url_for('main.change_password'))
+
+        current_user.password = bcrypt.generate_password_hash(new_password).decode('utf-8')
+        db.session.commit()
+
+        flash('Your password has been updated successfully!', 'success')
+        return redirect(url_for('main.dashboard'))
+        
+    return render_template('change_password.html', title="Change Password")
+
+
+app.register_blueprint(main_bp)
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8_003, debug=True)
+    app.run(host="0.0.0.0", port=8003, debug=True)
