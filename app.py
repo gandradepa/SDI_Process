@@ -40,7 +40,7 @@ LOGO_FAC_NAME = "ubc-facilities_logo.jpg"
 # Flask App Configuration
 # -----------------------------------------------------------------------------
 ## NEW -> Load environment variables from the central .env file
-load_dotenv('/home/developer/.env')
+load_dotenv('/home/developer/auth_service.env', override=True)
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, static_url_path="/static")
 
